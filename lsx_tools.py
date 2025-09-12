@@ -108,7 +108,7 @@ class LSXParser:
         
         return schema_info
 
-class EnhancedLSXEditor:
+class LSXEditor:
     """LSX Editor with syntax highlighting and better UX"""
     
     def __init__(self, parent=None, settings_manager=None):
@@ -127,7 +127,7 @@ class EnhancedLSXEditor:
             self.setup_editor_tab(parent)
     
     def setup_editor_tab(self, parent):
-        """Setup the enhanced editor interface"""
+        """Setup the editor interface"""
         editor_frame = ttk.Frame(parent)
         
         # Toolbar

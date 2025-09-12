@@ -4,6 +4,7 @@ import json
 import threading
 import time
 from tkinter import scrolledtext
+from file_manager import *
 
 class ResponsiveButton:
     """Wrapper to make buttons more responsive and prevent double-clicks"""
@@ -12,7 +13,7 @@ class ResponsiveButton:
         self.command = command
         self.button = ttk.Button(parent, text=text, command=self.handle_click, **kwargs)
         self.last_click_time = 0
-        self.click_delay = 0.5  # Minimum time between clicks
+        self.click_delay = 0.1  # Minimum time between clicks
     
     def handle_click(self):
         """Handle button click with debouncing"""
@@ -35,7 +36,7 @@ class ResponsiveButton:
             print(f"Button command error: {e}")
         finally:
             # Re-enable button after a short delay
-            self.button.after(500, lambda: self.button.config(state='normal'))
+            self.button.after(50, lambda: self.button.config(state='normal'))
     
     def pack(self, **kwargs):
         return self.button.pack(**kwargs)
@@ -303,8 +304,8 @@ class AssetBrowser:
         finally:
             self.preview_text.config(state='disabled')
 
-# Enhanced PAK Operations with Progress Bars
-class EnhancedPAKOperations:
+# PAK Operations with Progress Bars
+class PAKOperations:
     """PAK operations with progress feedback"""
     
     def __init__(self, bg3_tool, parent_window):
@@ -515,7 +516,7 @@ class SettingsDialog:
         self.dialog.destroy()
 
 class ProgressDialog:
-    """Enhanced progress dialog with better UI responsiveness"""
+    """Progress dialog with better UI responsiveness"""
     
     def __init__(self, parent, title="Processing..."):
         self.parent = parent
@@ -640,6 +641,9 @@ class BG3ModToolkitGUI:
         
         # Initialize settings manager
         self.settings_manager = SettingsManager()
+
+        # Get project manager
+        self.project_manager = ProjectManager(self.settings_manager)
         
         # Setup menu bar
         self.setup_menubar()
@@ -673,21 +677,29 @@ class BG3ModToolkitGUI:
         browser_tab = browser.setup_browser_tab(notebook)
         notebook.add(browser_tab, text="Asset Browser")
         
-        # Tab 2: Enhanced LSX Editor with syntax highlighting
-        editor = EnhancedLSXEditor(settings_manager=self.settings_manager)
+        # Tab 2: LSX Editor with syntax highlighting
+        editor = LSXEditor(settings_manager=self.settings_manager)
         editor_tab = editor.setup_editor_tab(notebook)
         notebook.add(editor_tab, text="LSX Editor")
         
-        # Tab 3: Enhanced PAK Tools with progress bars
+        # Tab 3: PAK Tools with progress bars
         pak_tab = self.setup_pak_tools_tab(notebook)
         notebook.add(pak_tab, text="PAK Tools")
+
+        # Tab 4: File Manager
+        file_manager = FileManagerWidget(notebook, self.settings_manager, self.project_manager)
+        notebook.add(file_manager.frame, text="Projects")
+
+        # Quick actions above status bar
+        quick_actions = QuickActionsWidget(self.root, self.project_manager, self.bg3_tool)
+        quick_actions.frame.pack(side='bottom', fill='x', padx=10, pady=2)
         
         # Status bar
         self.status_bar = ttk.Label(self.root, text="Ready", relief='sunken')
         self.status_bar.pack(side='bottom', fill='x')
     
     def setup_pak_tools_tab(self, parent):
-        """Improved PAK tools with responsive buttons"""
+        """PAK tools with responsive buttons"""
         frame = ttk.Frame(parent)
         
         ttk.Label(frame, text="PAK Operations", font=('Arial', 14, 'bold')).pack(pady=10)
