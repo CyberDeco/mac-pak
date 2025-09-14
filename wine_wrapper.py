@@ -6,13 +6,14 @@ Error handling, process monitoring, and Wine environment management
 
 import subprocess
 import os
-import json
-import tempfile
+
 import threading
 import queue
 import time
-import signal
+
 from pathlib import Path
+
+from pak_utils import PAKOperations
 
 class WineProcessMonitor:
     """Monitor Wine processes with real-time output and cancellation support"""
@@ -237,7 +238,7 @@ class WineEnvironmentManager:
             self.validate_wine_installation()
         return self._wine_info
 
-class BG3MacTool:
+class WineWrapper:
     """ BG3 Mac tool with Wine integration"""
     
     def __init__(self, wine_path=None, lslib_path=None, wine_prefix=None):
@@ -401,3 +402,123 @@ class BG3MacTool:
             "platform": os.sys.platform
         }
         return info
+
+    def extract_pak(self, pak_file, destination_dir):
+        """Extract PAK file using Divine.exe (simple version for backward compatibility)"""
+        wine_pak_path = self.mac_to_wine_path(pak_file)
+        wine_dest_path = self.mac_to_wine_path(destination_dir)
+        
+        # Create destination directory
+        os.makedirs(destination_dir, exist_ok=True)
+        
+        success, output = self.run_divine_command(
+            action="extract-package",
+            source=wine_pak_path,
+            destination=wine_dest_path
+        )
+        
+        return success
+    
+    def create_pak(self, source_dir, pak_file):
+        """Create PAK file from directory (simple version for backward compatibility)"""
+        wine_source_path = self.mac_to_wine_path(source_dir)
+        wine_pak_path = self.mac_to_wine_path(pak_file)
+        
+        # Ensure output directory exists
+        pak_dir = os.path.dirname(pak_file)
+        if pak_dir:
+            os.makedirs(pak_dir, exist_ok=True)
+        
+        success, output = self.run_divine_command(
+            action="create-package",
+            source=wine_source_path,
+            destination=wine_pak_path
+        )
+        
+        return success
+    
+    def list_pak_contents(self, pak_file):
+        """List contents of PAK file"""
+        wine_pak_path = self.mac_to_wine_path(pak_file)
+        
+        success, output = self.run_divine_command(
+            action="list-package",
+            source=wine_pak_path
+        )
+        
+        if success:
+            print("PAK Contents:")
+            # Parse Divine.exe output to extract file list
+            files = []
+            lines = output.split('\n')
+            for line in lines:
+                line = line.strip()
+                if line and not line.startswith('Opening') and not line.startswith('Package') and not line.startswith('Listing'):
+                    files.append({
+                        'name': line,
+                        'type': os.path.splitext(line)[1].lower() if '.' in line else 'folder'
+                    })
+            return files
+        else:
+            return []
+
+    def validate_mod_structure(self, mod_dir):
+        """Validate BG3 mod folder structure (simple version - pak_operations has the advanced one)"""
+        validation = {
+            'valid': True,
+            'structure': [],
+            'warnings': []
+        }
+
+        meta_found = False
+        
+        # Basic structure check
+        if not os.path.exists(mod_dir):
+            validation['valid'] = False
+            validation['warnings'].append(f"Directory does not exist: {mod_dir}")
+            return validation
+
+        # Folders that are game content, not mod content (don't need meta.lsx)
+        game_content_folders = {"GustavDev", "Gustav", "Shared", "Engine", "Game", "Core"}
+        
+        # Check for Mods folder (required)
+        mods_path = os.path.join(mod_dir, "Mods")
+        if os.path.exists(mods_path):
+            validation['structure'].append("Found Mods/")
+            # Look for mod subfolders
+            mod_subfolders = [d for d in os.listdir(mods_folder) if os.path.isdir(os.path.join(mods_folder, d))]
+            if mod_subfolders:
+                print('yes')
+                for subfolder in mod_subfolders:
+                    if subfolder in game_content_folders:
+                        validation['structure'].append(f"Game content folder: Mods/{subfolder}/")
+                        continue
+                    
+                    meta_path = os.path.join(mods_folder, subfolder, "meta.lsx")
+                    if os.path.exists(meta_path):
+                        validation['structure'].append(f"meta.lsx found in Mods/{subfolder}/")
+                        meta_found = True
+                    else:
+                        warnings.append(f"meta.lsx missing in Mods/{subfolder}/")
+            else:
+                warnings.append("No mod subfolders found in Mods/")
+        else:
+            warnings.append("Mods/ folder not found")
+        
+        if not meta_found:
+            warnings.append("No meta.lsx found - this mod may not work properly")
+            
+        else:
+            validation['valid'] = False
+            validation['warnings'].append("Missing required Mods/")
+        
+        # Check for optional folders
+        optional_folders = ['Public', 'Localization']
+        for folder in optional_folders:
+            folder_path = os.path.join(mod_dir, folder)
+            if os.path.exists(folder_path):
+                validation['structure'].append(f"Found {folder}/")
+            else:
+                validation['warnings'].append(f"Optional {folder}/ not found")
+        
+        return validation

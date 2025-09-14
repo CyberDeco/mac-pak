@@ -1,10 +1,17 @@
-from lsx_tools import *
+#from lsx_tools import *
 
 import json
 import threading
 import time
 from tkinter import scrolledtext
-from file_manager import *
+
+from wine_wrapper import WineWrapper
+from asset_browser import AssetBrowser
+from quick_actions import QuickActionsWidget
+from file_manager import FileManagerWidget
+from pak_utils import PAKOperations
+from lsx_tools import *
+from projects import *
 
 class ResponsiveButton:
     """Wrapper to make buttons more responsive and prevent double-clicks"""
@@ -44,326 +51,6 @@ class ResponsiveButton:
     def grid(self, **kwargs):
         return self.button.grid(**kwargs)
 
-class AssetBrowser:
-    """Phase 3: Browse extracted PAK contents and preview LSX files"""
-    
-    def __init__(self, parent=None, bg3_tool=None, settings_manager=None):  # Add settings_manager here
-        self.bg3_tool = bg3_tool
-        self.settings_manager = settings_manager
-        self.parser = LSXParser()
-        self.current_directory = None
-        
-        if parent:
-            self.setup_browser_tab(parent)
-    
-    def browse_folder(self):
-        """Browse for extracted PAK folder"""
-        initial_dir = "/"
-        if self.settings_manager:
-            initial_dir = self.settings_manager.get("working_directory", "/")
-        
-        folder_path = filedialog.askdirectory(
-            title="Select Extracted PAK Folder",
-            initialdir=initial_dir
-        )
-        
-        if folder_path:
-            self.current_directory = folder_path
-            
-            # Update working directory
-            if self.settings_manager:
-                self.settings_manager.set("working_directory", folder_path)
-                
-            self.refresh_view()
-    
-    def setup_browser_tab(self, parent):
-        """Setup the asset browser interface"""
-        browser_frame = ttk.Frame(parent)
-        
-        # Top toolbar
-        toolbar = ttk.Frame(browser_frame)
-        toolbar.pack(fill='x', padx=5, pady=2)
-        
-        ttk.Button(toolbar, text="Browse Folder", command=self.browse_folder).pack(side='left', padx=2)
-        ttk.Button(toolbar, text="Refresh", command=self.refresh_view).pack(side='left', padx=2)
-        
-        # Search
-        ttk.Label(toolbar, text="Filter:").pack(side='left', padx=(10,2))
-        self.search_var = tk.StringVar()
-        self.search_var.trace('w', self.filter_files)
-        search_entry = ttk.Entry(toolbar, textvariable=self.search_var, width=20)
-        search_entry.pack(side='left', padx=2)
-        
-        # Main layout - split pane
-        main_pane = ttk.PanedWindow(browser_frame, orient='horizontal')
-        main_pane.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Left: File tree
-        tree_frame = ttk.Frame(main_pane)
-        main_pane.add(tree_frame, weight=1)
-        
-        ttk.Label(tree_frame, text="Files").pack(anchor='w')
-        
-        self.file_tree = ttk.Treeview(tree_frame, selectmode='browse')
-        self.file_tree.heading('#0', text='File Name')
-        self.file_tree.pack(fill='both', expand=True)
-
-        # Add this binding for tree expansion
-        self.file_tree.bind('<<TreeviewOpen>>', self.on_tree_expand)
-        
-        # Scrollbar for tree
-        tree_scroll = ttk.Scrollbar(tree_frame, orient='vertical', command=self.file_tree.yview)
-        tree_scroll.pack(side='right', fill='y')
-        self.file_tree.configure(yscrollcommand=tree_scroll.set)
-        
-        # Bind selection
-        self.file_tree.bind('<<TreeviewSelect>>', self.on_file_select)
-        
-        # Right: Preview pane
-        preview_frame = ttk.Frame(main_pane)
-        main_pane.add(preview_frame, weight=2)
-        
-        ttk.Label(preview_frame, text="Preview").pack(anchor='w')
-        
-        self.preview_text = scrolledtext.ScrolledText(
-            preview_frame,
-            font=('Courier', 10),
-            state='disabled'
-        )
-        self.preview_text.pack(fill='both', expand=True)
-
-        # Auto-load working directory at startup
-        if self.settings_manager:
-            working_dir = self.settings_manager.get("working_directory")
-            if working_dir and os.path.exists(working_dir):
-                self.current_directory = working_dir
-                self.refresh_view()
-        
-        return browser_frame
-    
-    def refresh_view(self):
-        """Refresh the file tree view"""
-        if not self.current_directory:
-            return
-        
-        # Clear existing items
-        for item in self.file_tree.get_children():
-            self.file_tree.delete(item)
-        
-        # Populate tree
-        self.populate_tree(self.current_directory, '')
-
-    def on_tree_expand(self, event):
-        """Handle expanding tree nodes"""
-        item = self.file_tree.selection()[0] if self.file_tree.selection() else None
-        if not item:
-            item = self.file_tree.focus()
-        
-        if item:
-            # Check if this item has the "Loading..." placeholder
-            children = self.file_tree.get_children(item)
-            if children and self.file_tree.item(children[0])['text'] == "Loading...":
-                # Remove the placeholder
-                self.file_tree.delete(children[0])
-                
-                # Get the directory path for this item
-                values = self.file_tree.item(item)['values']
-                if values and os.path.isdir(values[0]):
-                    # Populate the actual contents
-                    self.populate_tree(values[0], item)
-    
-    def populate_tree(self, directory, parent):
-        """Recursively populate the file tree"""
-        try:
-            items = []
-            for item in os.listdir(directory):
-                if item.startswith('.'):  # Skip hidden files
-                    continue
-                    
-                item_path = os.path.join(directory, item)
-                if os.path.isdir(item_path):
-                    # Add folder
-                    folder_id = self.file_tree.insert(parent, 'end', text=f"📁 {item}", 
-                                                    values=(item_path,), tags=('folder',))
-                    
-                    # Check if this folder has contents to decide if it should be expandable
-                    try:
-                        if any(not f.startswith('.') for f in os.listdir(item_path)):
-                            # Add placeholder to make it expandable
-                            self.file_tree.insert(folder_id, 'end', text="Loading...")
-                    except (PermissionError, OSError):
-                        pass  # No placeholder if we can't read the directory
-                else:
-                    # Add file with appropriate icon
-                    icon = self.get_file_icon(item)
-                    self.file_tree.insert(parent, 'end', text=f"{icon} {item}", 
-                                        values=(item_path,), tags=('file',))
-            
-        except PermissionError:
-            self.file_tree.insert(parent, 'end', text="❌ Permission Denied")
-    
-    # def populate_tree(self, directory, parent):
-    #     """Recursively populate the file tree"""
-    #     try:
-    #         items = []
-    #         for item in os.listdir(directory):
-    #             item_path = os.path.join(directory, item)
-    #             if os.path.isdir(item_path):
-    #                 # Add folder
-    #                 folder_id = self.file_tree.insert(parent, 'end', text=f"📁 {item}", 
-    #                                                 values=(item_path,), tags=('folder',))
-    #                 # Add placeholder to make it expandable
-    #                 self.file_tree.insert(folder_id, 'end', text="Loading...")
-    #             else:
-    #                 # Add file with appropriate icon
-    #                 icon = self.get_file_icon(item)
-    #                 self.file_tree.insert(parent, 'end', text=f"{icon} {item}", 
-    #                                     values=(item_path,), tags=('file',))
-            
-    #     except PermissionError:
-    #         self.file_tree.insert(parent, 'end', text="❌ Permission Denied")
-    
-    def get_file_icon(self, filename):
-        """Get appropriate icon for file type"""
-        ext = os.path.splitext(filename)[1].lower()
-        
-        icons = {
-            '.lsx': '📄',
-            '.lsf': '🔒',
-            '.xml': '📄',
-            '.txt': '📝',
-            '.dds': '🖼️',
-            '.gr2': '🎭',
-            '.json': '📋'
-        }
-        
-        return icons.get(ext, '📄')
-    
-    def filter_files(self, *args):
-        """Filter files based on search term"""
-        # Simple implementation - would need enhancement for real filtering
-        pass
-    
-    def on_file_select(self, event):
-        """Handle file selection"""
-        selection = self.file_tree.selection()
-        if not selection:
-            return
-        
-        item = selection[0]
-        values = self.file_tree.item(item)['values']
-        
-        if values:
-            file_path = values[0]
-            if os.path.isfile(file_path):
-                self.preview_file(file_path)
-    
-    def preview_file(self, file_path):
-        """Preview selected file"""
-        self.preview_text.config(state='normal')
-        self.preview_text.delete(1.0, tk.END)
-        
-        try:
-            # Get file info
-            file_size = os.path.getsize(file_path)
-            file_ext = os.path.splitext(file_path)[1].lower()
-            
-            preview_content = f"File: {os.path.basename(file_path)}\n"
-            preview_content += f"Size: {file_size:,} bytes\n"
-            preview_content += f"Type: {file_ext}\n"
-            preview_content += "-" * 50 + "\n\n"
-            
-            if file_ext in ['.lsx', '.xml', '.txt', '.json']:
-                # Text-based files
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read(2000)  # First 2KB
-                    preview_content += content
-                    if file_size > 2000:
-                        preview_content += f"\n\n... ({file_size-2000:,} more bytes)"
-                
-                # If it's LSX, add structure info
-                if file_ext == '.lsx':
-                    schema_info = self.parser.get_lsx_schema_info(file_path)
-                    if schema_info:
-                        preview_content += f"\n\n{'='*30}\nLSX STRUCTURE INFO:\n{'='*30}\n"
-                        preview_content += f"File Type: {schema_info['file_type']}\n"
-                        preview_content += f"Regions: {len(schema_info['regions'])}\n"
-                        preview_content += f"Node Types: {dict(list(schema_info['node_types'].items())[:5])}\n"
-                        if len(schema_info['node_types']) > 5:
-                            preview_content += "... and more\n"
-            
-            else:
-                preview_content += f"Binary file - cannot preview\n"
-                preview_content += f"Extension: {file_ext}"
-            
-            self.preview_text.insert(1.0, preview_content)
-            
-        except Exception as e:
-            self.preview_text.insert(1.0, f"Error previewing file: {e}")
-        
-        finally:
-            self.preview_text.config(state='disabled')
-
-# PAK Operations with Progress Bars
-class PAKOperations:
-    """PAK operations with progress feedback"""
-    
-    def __init__(self, bg3_tool, parent_window):
-        self.bg3_tool = bg3_tool
-        self.parent_window = parent_window
-    
-    def extract_pak_with_progress(self, pak_file, destination_dir, progress_callback=None):
-        """Extract PAK with progress tracking"""
-        
-        def extraction_worker():
-            try:
-                if progress_callback:
-                    progress_callback(10, "Starting extraction...")
-                
-                # Your existing extraction code here, but with progress updates
-                success = self.bg3_tool.extract_pak(pak_file, destination_dir)
-                
-                if progress_callback:
-                    progress_callback(100, "Extraction complete!")
-                
-                return success
-                
-            except Exception as e:
-                if progress_callback:
-                    progress_callback(0, f"Error: {e}")
-                return False
-        
-        return extraction_worker()
-    
-    def create_pak_with_progress(self, source_dir, pak_file, progress_callback=None):
-        """Create PAK with progress tracking"""
-        
-        def creation_worker():
-            try:
-                if progress_callback:
-                    progress_callback(10, "Validating mod structure...")
-                
-                # Validate first
-                validation = self.bg3_tool.validate_mod_structure(source_dir)
-                
-                if progress_callback:
-                    progress_callback(30, "Creating PAK file...")
-                
-                # Create PAK
-                success = self.bg3_tool.create_pak(source_dir, pak_file)
-                
-                if progress_callback:
-                    progress_callback(100, "PAK creation complete!")
-                
-                return success
-                
-            except Exception as e:
-                if progress_callback:
-                    progress_callback(0, f"Error: {e}")
-                return False
-        
-        return creation_worker()
-
 class SettingsManager:
     """Manage user settings including working directory"""
     
@@ -376,7 +63,7 @@ class SettingsManager:
         default_settings = {
             "working_directory": os.path.expanduser("~/Desktop"),
             "wine_path": "/opt/homebrew/bin/wine",
-            "lslib_path": "",
+            "divine_path": "",
             "window_geometry": "1000x700",
             "recent_files": []
         }
@@ -454,17 +141,17 @@ class SettingsDialog:
         
         ttk.Button(wine_frame, text="Browse", command=self.browse_wine_path).pack(side='right')
         
-        # LSLib Path
+        # divine Path
         ttk.Label(main_frame, text="Divine.exe Path:").pack(anchor='w', pady=(0, 5))
         
-        lslib_frame = ttk.Frame(main_frame)
-        lslib_frame.pack(fill='x', pady=(0, 20))
+        divine_frame = ttk.Frame(main_frame)
+        divine_frame.pack(fill='x', pady=(0, 20))
         
-        self.lslib_path_var = tk.StringVar()
-        lslib_entry = ttk.Entry(lslib_frame, textvariable=self.lslib_path_var)
-        lslib_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
+        self.divine_path_var = tk.StringVar()
+        divine_entry = ttk.Entry(divine_frame, textvariable=self.divine_path_var)
+        divine_entry.pack(side='left', fill='x', expand=True, padx=(0, 5))
         
-        ttk.Button(lslib_frame, text="Browse", command=self.browse_lslib_path).pack(side='right')
+        ttk.Button(divine_frame, text="Browse", command=self.browse_divine_path).pack(side='right')
         
         # Buttons
         button_frame = ttk.Frame(main_frame)
@@ -477,7 +164,7 @@ class SettingsDialog:
         """Load current settings into the dialog"""
         self.working_dir_var.set(self.settings_manager.get("working_directory", ""))
         self.wine_path_var.set(self.settings_manager.get("wine_path", ""))
-        self.lslib_path_var.set(self.settings_manager.get("lslib_path", ""))
+        self.divine_path_var.set(self.settings_manager.get("divine_path", ""))
     
     def browse_working_dir(self):
         """Browse for working directory"""
@@ -497,20 +184,20 @@ class SettingsDialog:
         if file_path:
             self.wine_path_var.set(file_path)
     
-    def browse_lslib_path(self):
+    def browse_divine_path(self):
         """Browse for Divine.exe"""
         file_path = filedialog.askopenfilename(
             title="Select Divine.exe",
             filetypes=[("Executable files", "*.exe"), ("All files", "*.*")]
         )
         if file_path:
-            self.lslib_path_var.set(file_path)
+            self.divine_path_var.set(file_path)
     
     def save_settings(self):
         """Save settings and close dialog"""
         self.settings_manager.set("working_directory", self.working_dir_var.get())
         self.settings_manager.set("wine_path", self.wine_path_var.get())
-        self.settings_manager.set("lslib_path", self.lslib_path_var.get())
+        self.settings_manager.set("divine_path", self.divine_path_var.get())
         
         messagebox.showinfo("Settings", "Settings saved successfully!")
         self.dialog.destroy()
@@ -631,24 +318,35 @@ class ProgressDialog:
             pass  # Dialog already closed
 
 class BG3ModToolkitGUI:
-    """Main GUI application with progress bars and better UX"""
+    """Main GUI application - now focused only on UI logic"""
     
-    def __init__(self, bg3_tool):
-        self.bg3_tool = bg3_tool
+    def __init__(self, wine_path=None, divine_path=None):
+
+        if not wine_path:
+            wine_path = SettingsDialog.wine_path_var
+            if not wine_path:
+                raise ValueError("Must set wine_path when launching tool or in settings")
+        if not divine_path:
+            divine_path = SettingsDialog.divine_path_var
+            if not divine_path:
+                raise ValueError("Must set divine_path when launching tool or in settings")
+        
+        self.bg3_tool = WineWrapper(wine_path, divine_path)
+        
+        # Initialize operations modules
+        self.pak_ops = PAKOperations(self.bg3_tool)
+        self.conversion_ops = FileConversionOperations(self.bg3_tool)
+        
         self.root = tk.Tk()
         self.root.title("BG3 Mac Modding Toolkit")
         self.root.geometry("1000x700")
         
-        # Initialize settings manager
+        # Initialize settings and project managers
         self.settings_manager = SettingsManager()
-
-        # Get project manager
         self.project_manager = ProjectManager(self.settings_manager)
         
-        # Setup menu bar
+        # Setup GUI
         self.setup_menubar()
-        
-        # Setup main GUI
         self.setup_gui()
     
     def setup_menubar(self):
@@ -665,7 +363,7 @@ class BG3ModToolkitGUI:
         help_menu = tk.Menu(menubar, tearoff=0)
         menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="About", command=self.show_about)
-    
+
     def setup_gui(self):
         """Setup the main GUI"""
         # Main notebook for tabs
@@ -697,7 +395,7 @@ class BG3ModToolkitGUI:
         # Status bar
         self.status_bar = ttk.Label(self.root, text="Ready", relief='sunken')
         self.status_bar.pack(side='bottom', fill='x')
-    
+
     def setup_pak_tools_tab(self, parent):
         """PAK tools with responsive buttons"""
         frame = ttk.Frame(parent)
@@ -743,7 +441,8 @@ class BG3ModToolkitGUI:
         return frame
     
     def extract_pak_with_progress(self):
-        """Extract PAK with progress dialog"""
+
+        """Extract PAK - now just handles UI logic"""
         initial_dir = self.settings_manager.get("working_directory", "/")
         
         pak_file = filedialog.askopenfilename(
@@ -752,107 +451,50 @@ class BG3ModToolkitGUI:
             filetypes=[("PAK files", "*.pak"), ("All files", "*.*")]
         )
         
-        if pak_file:
-            # Update working directory
-            self.settings_manager.set("working_directory", os.path.dirname(pak_file))
-            
-            dest_dir = filedialog.askdirectory(
-                title="Select extraction destination",
-                initialdir=initial_dir
-            )
-            
-            if dest_dir:
-                # Update working directory
-                self.settings_manager.set("working_directory", dest_dir)
-                
-                # Start progress dialog
-                progress_dialog = ProgressDialog(self.root, "Extracting PAK File")
-                
-                def extraction_worker():
-                    try:
-                        # Update progress
-                        self.root.after(0, lambda: progress_dialog.update_progress(10, "Starting extraction..."))
-                        
-                        # Add result to UI thread-safely
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, f"Extracting {os.path.basename(pak_file)}...\n"))
-                        
-                        # Simulate progress updates (in real implementation, you'd hook into Divine.exe output)
-                        self.root.after(0, lambda: progress_dialog.update_progress(30, "Extracting files..."))
-                        
-                        # Perform extraction
-                        success = self.bg3_tool.extract_pak(pak_file, dest_dir)
-                        
-                        # Update progress
-                        if success:
-                            self.root.after(0, lambda: progress_dialog.update_progress(100, "Extraction complete!"))
-                            self.root.after(0, lambda: self.results_text.insert(tk.END, "✅ Extraction completed!\n\n"))
-                        else:
-                            self.root.after(0, lambda: progress_dialog.update_progress(0, "Extraction failed"))
-                            self.root.after(0, lambda: self.results_text.insert(tk.END, "❌ Extraction failed!\n\n"))
-                        
-                        # Close progress dialog
-                        time.sleep(0.5)  # Brief pause to show completion
-                        self.root.after(0, progress_dialog.close)
-                        
-                    except Exception as e:
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, f"❌ Error: {e}\n\n"))
-                        self.root.after(0, progress_dialog.close)
-                
-                # Start extraction in background thread
-                threading.Thread(target=extraction_worker, daemon=True).start()
-    
-    def list_pak_with_progress(self):
-        """List PAK contents with progress dialog"""
-        initial_dir = self.settings_manager.get("working_directory", "/")
+        if not pak_file:
+            return
         
-        pak_file = filedialog.askopenfilename(
-            title="Select PAK file",
-            initialdir=initial_dir,
-            filetypes=[("PAK files", "*.pak"), ("All files", "*.*")]
+        self.settings_manager.set("working_directory", os.path.dirname(pak_file))
+        
+        dest_dir = filedialog.askdirectory(
+            title="Select extraction destination",
+            initialdir=initial_dir
         )
         
-        if pak_file:
-            # Update working directory
-            self.settings_manager.set("working_directory", os.path.dirname(pak_file))
+        if not dest_dir:
+            return
             
-            progress_dialog = ProgressDialog(self.root, "Listing PAK Contents")
+        self.settings_manager.set("working_directory", dest_dir)
+        
+        # Create progress dialog
+        progress_dialog = ProgressDialog(self.root, "Extracting PAK File")
+        
+        # Progress callback - updates the dialog
+        def progress_update(percentage, message):
+            self.root.after(0, lambda: progress_dialog.update_progress(percentage, message))
+        
+        # Completion callback - handles the results
+        def extraction_complete(success, output):
+            self.root.after(0, lambda: self._add_result_text(
+                f"Extracting {os.path.basename(pak_file)}...\n"
+            ))
             
-            def listing_worker():
-                try:
-                    self.root.after(0, lambda: progress_dialog.update_progress(20, "Reading PAK file..."))
-                    self.root.after(0, lambda: self.results_text.insert(tk.END, f"Listing contents of {os.path.basename(pak_file)}...\n"))
-                    
-                    self.root.after(0, lambda: progress_dialog.update_progress(50, "Parsing file list..."))
-                    
-                    files = self.bg3_tool.list_pak_contents(pak_file)
-                    
-                    self.root.after(0, lambda: progress_dialog.update_progress(80, "Formatting results..."))
-                    
-                    # Format results
-                    result_text = f"Found {len(files)} files:\n"
-                    
-                    for file_info in files[:50]:  # Show first 50
-                        result_text += f"  {file_info['name']}\n"
-                    
-                    if len(files) > 50:
-                        result_text += f"  ... and {len(files) - 50} more files\n"
-                    
-                    result_text += "\n"
-                    
-                    self.root.after(0, lambda: progress_dialog.update_progress(100, "Complete!"))
-                    self.root.after(0, lambda: self.results_text.insert(tk.END, result_text))
-                    
-                    time.sleep(0.5)
-                    self.root.after(0, progress_dialog.close)
-                    
-                except Exception as e:
-                    self.root.after(0, lambda: self.results_text.insert(tk.END, f"❌ Error: {e}\n\n"))
-                    self.root.after(0, progress_dialog.close)
+            if success:
+                self.root.after(0, lambda: self._add_result_text(
+                    f"✅ Extraction completed!\n{output}\n\n"
+                ))
+            else:
+                self.root.after(0, lambda: self._add_result_text(
+                    f"❌ Extraction failed!\n{output}\n\n"
+                ))
             
-            threading.Thread(target=listing_worker, daemon=True).start()
+            self.root.after(0, progress_dialog.close)
+        
+        # Start the operation (all logic moved to pak_operations)
+        self.pak_ops.extract_pak_threaded(pak_file, dest_dir, progress_update, extraction_complete)
     
     def create_pak_with_progress(self):
-        """Create PAK with progress dialog"""
+        """Create PAK - now just handles UI logic"""
         initial_dir = self.settings_manager.get("working_directory", "/")
         
         source_dir = filedialog.askdirectory(
@@ -860,69 +502,91 @@ class BG3ModToolkitGUI:
             initialdir=initial_dir
         )
         
-        if source_dir:
-            # Update working directory
-            self.settings_manager.set("working_directory", source_dir)
+        if not source_dir:
+            return
             
-            # Suggest PAK filename based on folder name
-            suggested_name = f"{os.path.basename(source_dir)}.pak"
+        self.settings_manager.set("working_directory", source_dir)
+        suggested_name = f"{os.path.basename(source_dir)}.pak"
+        
+        pak_file = filedialog.asksaveasfilename(
+            title="Save PAK file as",
+            initialdir=os.path.dirname(source_dir),
+            defaultextension=".pak",
+            initialfile=suggested_name,
+            filetypes=[("PAK files", "*.pak"), ("All files", "*.*")]
+        )
+        
+        if not pak_file:
+            return
+        
+        # Create progress dialog
+        progress_dialog = ProgressDialog(self.root, "Creating PAK File")
+        
+        def progress_update(percentage, message):
+            self.root.after(0, lambda: progress_dialog.update_progress(percentage, message))
+        
+        def creation_complete(result_data):
+            self.root.after(0, lambda: self._add_result_text(
+                f"Creating PAK from: {os.path.basename(source_dir)}\n"
+                f"Output: {os.path.basename(pak_file)}\n"
+            ))
             
-            pak_file = filedialog.asksaveasfilename(
-                title="Save PAK file as",
-                initialdir=os.path.dirname(source_dir),
-                defaultextension=".pak",
-                initialfile=suggested_name,
-                filetypes=[("PAK files", "*.pak"), ("All files", "*.*")]
-            )
+            # Show validation results if available
+            if result_data.get('validation'):
+                validation_text = self._format_validation_results(result_data['validation'])
+                self.root.after(0, lambda: self._add_result_text(validation_text))
             
-            if pak_file:
-                progress_dialog = ProgressDialog(self.root, "Creating PAK File")
-                
-                def creation_worker():
-                    try:
-                        self.root.after(0, lambda: progress_dialog.update_progress(10, "Validating mod structure..."))
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, f"Creating PAK from: {os.path.basename(source_dir)}\n"))
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, f"Output: {os.path.basename(pak_file)}\n"))
-                        
-                        # Validate mod structure
-                        validation = self.bg3_tool.validate_mod_structure(source_dir)
-                        
-                        self.root.after(0, lambda: progress_dialog.update_progress(30, "Structure validation complete"))
-                        
-                        # Add validation results
-                        validation_text = "\nMod Structure Validation:\n"
-                        for item in validation['structure']:
-                            validation_text += f"  {item}\n"
-                        for warning in validation['warnings']:
-                            validation_text += f"  {warning}\n"
-                        validation_text += "\n"
-                        
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, validation_text))
-                        
-                        self.root.after(0, lambda: progress_dialog.update_progress(50, "Creating PAK file..."))
-                        
-                        # Create the PAK
-                        success = self.bg3_tool.create_pak(source_dir, pak_file)
-                        
-                        if success:
-                            self.root.after(0, lambda: progress_dialog.update_progress(100, "PAK creation complete!"))
-                            self.root.after(0, lambda: self.results_text.insert(tk.END, "✅ PAK creation completed!\n"))
-                            self.root.after(0, lambda: self.results_text.insert(tk.END, f"Ready to install: {os.path.basename(pak_file)}\n\n"))
-                        else:
-                            self.root.after(0, lambda: progress_dialog.update_progress(0, "PAK creation failed"))
-                            self.root.after(0, lambda: self.results_text.insert(tk.END, "❌ PAK creation failed!\n\n"))
-                        
-                        time.sleep(0.5)
-                        self.root.after(0, progress_dialog.close)
-                        
-                    except Exception as e:
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, f"❌ Error: {e}\n\n"))
-                        self.root.after(0, progress_dialog.close)
-                
-                threading.Thread(target=creation_worker, daemon=True).start()
+            # Show final result
+            if result_data['success']:
+                self.root.after(0, lambda: self._add_result_text(
+                    f"✅ PAK creation completed!\n{result_data['output']}\n\n"
+                ))
+            else:
+                self.root.after(0, lambda: self._add_result_text(
+                    f"❌ PAK creation failed!\n{result_data['output']}\n\n"
+                ))
+            
+            self.root.after(0, progress_dialog.close)
+        
+        # Start the operation with validation
+        self.pak_ops.create_pak_threaded(source_dir, pak_file, progress_update, creation_complete, validate=True)
+    
+    def list_pak_with_progress(self):
+        """List PAK contents - now just handles UI logic"""
+        initial_dir = self.settings_manager.get("working_directory", "/")
+        
+        pak_file = filedialog.askopenfilename(
+            title="Select PAK file",
+            initialdir=initial_dir,
+            filetypes=[("PAK files", "*.pak"), ("All files", "*.*")]
+        )
+        
+        if not pak_file:
+            return
+            
+        self.settings_manager.set("working_directory", os.path.dirname(pak_file))
+        
+        progress_dialog = ProgressDialog(self.root, "Listing PAK Contents")
+        
+        def progress_update(percentage, message):
+            self.root.after(0, lambda: progress_dialog.update_progress(percentage, message))
+        
+        def listing_complete(result_data):
+            if result_data['success']:
+                result_text = self._format_file_list(result_data, pak_file)
+                self.root.after(0, lambda: self._add_result_text(result_text))
+            else:
+                self.root.after(0, lambda: self._add_result_text(
+                    f"❌ Failed to list PAK contents: {result_data.get('error', 'Unknown error')}\n\n"
+                ))
+            
+            self.root.after(0, progress_dialog.close)
+        
+        # Start the operation
+        self.pak_ops.list_pak_contents_threaded(pak_file, progress_update, listing_complete)
     
     def rebuild_pak_with_progress(self):
-        """Rebuild PAK with progress dialog"""
+        """Rebuild PAK - now just calls create_pak_threaded without validation"""
         initial_dir = self.settings_manager.get("working_directory", "/")
         
         extracted_dir = filedialog.askdirectory(
@@ -930,51 +594,47 @@ class BG3ModToolkitGUI:
             initialdir=initial_dir
         )
         
-        if extracted_dir:
-            # Update working directory
-            self.settings_manager.set("working_directory", extracted_dir)
+        if not extracted_dir:
+            return
             
-            # Suggest output filename
-            suggested_name = f"{os.path.basename(extracted_dir)}_modified.pak"
+        self.settings_manager.set("working_directory", extracted_dir)
+        suggested_name = f"{os.path.basename(extracted_dir)}_modified.pak"
+        
+        pak_file = filedialog.asksaveasfilename(
+            title="Save rebuilt PAK as",
+            initialdir=os.path.dirname(extracted_dir),
+            defaultextension=".pak",
+            initialfile=suggested_name,
+            filetypes=[("PAK files", "*.pak"), ("All files", "*.*")]
+        )
+        
+        if not pak_file:
+            return
+        
+        progress_dialog = ProgressDialog(self.root, "Rebuilding PAK")
+        
+        def progress_update(percentage, message):
+            self.root.after(0, lambda: progress_dialog.update_progress(percentage, message))
+        
+        def rebuild_complete(result_data):
+            self.root.after(0, lambda: self._add_result_text(
+                f"Rebuilding PAK from: {os.path.basename(extracted_dir)}\n"
+            ))
             
-            pak_file = filedialog.asksaveasfilename(
-                title="Save rebuilt PAK as",
-                initialdir=os.path.dirname(extracted_dir),
-                defaultextension=".pak",
-                initialfile=suggested_name,
-                filetypes=[("PAK files", "*.pak"), ("All files", "*.*")]
-            )
+            if result_data['success']:
+                self.root.after(0, lambda: self._add_result_text("✅ PAK rebuild completed!\n\n"))
+            else:
+                self.root.after(0, lambda: self._add_result_text(
+                    f"❌ PAK rebuild failed!\n{result_data['output']}\n\n"
+                ))
             
-            if pak_file:
-                progress_dialog = ProgressDialog(self.root, "Rebuilding PAK")
-                
-                def rebuild_worker():
-                    try:
-                        self.root.after(0, lambda: progress_dialog.update_progress(20, "Starting rebuild..."))
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, f"Rebuilding PAK from: {os.path.basename(extracted_dir)}\n"))
-                        
-                        self.root.after(0, lambda: progress_dialog.update_progress(60, "Creating PAK file..."))
-                        
-                        success = self.bg3_tool.create_pak(extracted_dir, pak_file)
-                        
-                        if success:
-                            self.root.after(0, lambda: progress_dialog.update_progress(100, "Rebuild complete!"))
-                            self.root.after(0, lambda: self.results_text.insert(tk.END, "✅ PAK rebuild completed!\n\n"))
-                        else:
-                            self.root.after(0, lambda: progress_dialog.update_progress(0, "Rebuild failed"))
-                            self.root.after(0, lambda: self.results_text.insert(tk.END, "❌ PAK rebuild failed!\n\n"))
-                        
-                        time.sleep(0.5)
-                        self.root.after(0, progress_dialog.close)
-                        
-                    except Exception as e:
-                        self.root.after(0, lambda: self.results_text.insert(tk.END, f"❌ Error: {e}\n\n"))
-                        self.root.after(0, progress_dialog.close)
-                
-                threading.Thread(target=rebuild_worker, daemon=True).start()
+            self.root.after(0, progress_dialog.close)
+        
+        # Rebuilding is just creating a PAK from an extracted folder (no validation needed)
+        self.pak_ops.create_pak_threaded(extracted_dir, pak_file, progress_update, rebuild_complete, validate=False)
     
     def validate_mod_gui(self):
-        """Validate mod structure (this one can stay synchronous since it's fast)"""
+        """Validate mod structure - now uses pak_operations"""
         initial_dir = self.settings_manager.get("working_directory", "/")
         
         mod_dir = filedialog.askdirectory(
@@ -982,27 +642,63 @@ class BG3ModToolkitGUI:
             initialdir=initial_dir
         )
         
-        if mod_dir:
-            # Update working directory
-            self.settings_manager.set("working_directory", mod_dir)
+        if not mod_dir:
+            return
             
-            self.results_text.insert(tk.END, f"Validating mod structure: {os.path.basename(mod_dir)}\n")
-            
-            validation = self.bg3_tool.validate_mod_structure(mod_dir)
-            
-            self.results_text.insert(tk.END, f"\nValidation Results:\n")
-            self.results_text.insert(tk.END, f"Valid: {'✅ Yes' if validation['valid'] else '❌ No'}\n\n")
-            
-            self.results_text.insert(tk.END, "Structure Found:\n")
-            for item in validation['structure']:
-                self.results_text.insert(tk.END, f"  {item}\n")
-            
-            if validation['warnings']:
-                self.results_text.insert(tk.END, "\nWarnings:\n")
-                for warning in validation['warnings']:
-                    self.results_text.insert(tk.END, f"  {warning}\n")
-            
-            self.results_text.insert(tk.END, "\n")
+        self.settings_manager.set("working_directory", mod_dir)
+        
+        self._add_result_text(f"Validating mod structure: {os.path.basename(mod_dir)}\n")
+        
+        # Use the validation from pak_operations
+        validation = self.pak_ops.validate_mod_structure(mod_dir)
+        
+        # Format and display results
+        result_text = f"\nValidation Results:\n"
+        result_text += f"Valid: {'✅ Yes' if validation['valid'] else '❌ No'}\n\n"
+        
+        result_text += "Structure Found:\n"
+        for item in validation['structure']:
+            result_text += f"  ✅ {item}\n"
+        
+        if validation['warnings']:
+            result_text += "\nWarnings:\n"
+            for warning in validation['warnings']:
+                result_text += f"  ⚠️ {warning}\n"
+        
+        result_text += "\n"
+        self._add_result_text(result_text)
+    
+    # Helper methods to keep the main methods clean
+    def _add_result_text(self, text):
+        """Thread-safe way to add text to results area"""
+        self.results_text.insert(tk.END, text)
+        self.results_text.see(tk.END)  # Auto-scroll to bottom
+    
+    def _format_validation_results(self, validation):
+        """Format validation results for display"""
+        result_text = "\nMod Structure Validation:\n"
+        for item in validation['structure']:
+            result_text += f"  ✅ {item}\n"
+        for warning in validation['warnings']:
+            result_text += f"  ⚠️ {warning}\n"
+        result_text += "\n"
+        return result_text
+    
+    def _format_file_list(self, result_data, pak_file):
+        """Format file list for display"""
+        files = result_data['files']
+        result_text = f"Found {result_data['file_count']} files in {os.path.basename(pak_file)}:\n"
+        
+        # Show first 50 files
+        for file_info in files[:50]:
+            icon = "📁" if file_info['type'] == 'folder' else "📄"
+            result_text += f"  {icon} {file_info['name']}\n"
+        
+        if len(files) > 50:
+            result_text += f"  ... and {len(files) - 50} more files\n"
+        
+        result_text += "\n"
+        return result_text
     
     def open_settings(self):
         """Open settings dialog"""
@@ -1020,7 +716,7 @@ class BG3ModToolkitGUI:
                     • Edit LSX files with syntax highlighting
                     • Validate mod structures
                     
-                    Built with Python, tkinter, and lslib via Wine."""
+                    Built with Python, tkinter, and divine via Wine."""
         
         messagebox.showinfo("About BG3 Mac Modding Toolkit", about_text)
     
