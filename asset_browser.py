@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from collections import defaultdict
 
-from lsx_tools import LSXParser
+from larian_parser import UniversalBG3Parser
 
 class AssetBrowser:
     """Phase 3: Browse extracted PAK contents and preview LSX files"""
@@ -18,7 +18,7 @@ class AssetBrowser:
     def __init__(self, parent=None, bg3_tool=None, settings_manager=None):
         self.bg3_tool = bg3_tool
         self.settings_manager = settings_manager
-        self.parser = LSXParser()
+        self.parser = UniversalBG3Parser()
         self.current_directory = None
         
         if parent:
@@ -220,7 +220,7 @@ class AssetBrowser:
             preview_content += f"Type: {file_ext}\n"
             preview_content += "-" * 50 + "\n\n"
             
-            if file_ext in ['.lsx', '.xml', '.txt', '.json']:
+            if file_ext in ['.lsx', '.lsj', '.xml', '.txt', '.json']:  # Added .lsj here
                 # Text-based files
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                     content = f.read(2000)  # First 2KB
@@ -228,16 +228,24 @@ class AssetBrowser:
                     if file_size > 2000:
                         preview_content += f"\n\n... ({file_size-2000:,} more bytes)"
                 
-                # If it's LSX, add structure info
-                if file_ext == '.lsx':
-                    schema_info = self.parser.get_lsx_schema_info(file_path)
-                    if schema_info:
-                        preview_content += f"\n\n{'='*30}\nLSX STRUCTURE INFO:\n{'='*30}\n"
-                        preview_content += f"File Type: {schema_info['file_type']}\n"
-                        preview_content += f"Regions: {len(schema_info['regions'])}\n"
-                        preview_content += f"Node Types: {dict(list(schema_info['node_types'].items())[:5])}\n"
-                        if len(schema_info['node_types']) > 5:
-                            preview_content += "... and more\n"
+                # If it's a BG3 data file, add structure info
+                if file_ext in ['.lsx', '.lsj', '.lsf']:
+                    try:
+                        parsed_data = self.parser.parse_file(file_path)
+                        if parsed_data:
+                            preview_content += f"\n\n{'='*30}\nBG3 FILE INFO:\n{'='*30}\n"
+                            preview_content += f"Format: {parsed_data['format'].upper()}\n"
+                            preview_content += f"Regions: {len(parsed_data.get('regions', []))}\n"
+                            if parsed_data.get('version'):
+                                preview_content += f"Version: {parsed_data['version']}\n"
+                            
+                            # LSJ-specific info
+                            if file_ext == '.lsj' and 'raw_data' in parsed_data:
+                                raw_data = parsed_data['raw_data']
+                                if isinstance(raw_data, dict):
+                                    preview_content += f"JSON Keys: {list(raw_data.keys())[:5]}\n"
+                    except Exception as e:
+                        preview_content += f"\n\nNote: Could not parse BG3 structure: {e}\n"
             
             else:
                 preview_content += f"Binary file - cannot preview\n"

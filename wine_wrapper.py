@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 
 from pak_utils import PAKOperations
+from larian_parser import *
 
 class WineProcessMonitor:
     """Monitor Wine processes with real-time output and cancellation support"""
@@ -522,3 +523,18 @@ class WineWrapper:
                 validation['warnings'].append(f"Optional {folder}/ not found")
         
         return validation
+
+    def convert_lsf_to_lsx(self, lsf_path, lsx_path):
+        """Convert LSF to LSX using divine.exe"""
+        try:
+            success, output = self.run_divine_command(
+                action="convert-resource",
+                source=self.mac_to_wine_path(lsf_path),
+                destination=self.mac_to_wine_path(lsx_path),
+                input_format="lsf",
+                output_format="lsx"
+            )
+            return success
+        except Exception as e:
+            print(f"LSF conversion error: {e}")
+            return False

@@ -335,7 +335,6 @@ class BG3ModToolkitGUI:
         
         # Initialize operations modules
         self.pak_ops = PAKOperations(self.bg3_tool)
-        self.conversion_ops = FileConversionOperations(self.bg3_tool)
         
         self.root = tk.Tk()
         self.root.title("BG3 Mac Modding Toolkit")
@@ -374,17 +373,22 @@ class BG3ModToolkitGUI:
         browser = AssetBrowser(bg3_tool=self.bg3_tool, settings_manager=self.settings_manager)
         browser_tab = browser.setup_browser_tab(notebook)
         notebook.add(browser_tab, text="Asset Browser")
-        
-        # Tab 2: LSX Editor with syntax highlighting
-        editor = LSXEditor(settings_manager=self.settings_manager)
+
+        # Tab 2: Enhanced Universal Editor with LSX, LSJ, LSF support
+        editor = LSXEditor(settings_manager=self.settings_manager, bg3_tool=self.bg3_tool)
         editor_tab = editor.setup_editor_tab(notebook)
-        notebook.add(editor_tab, text="LSX Editor")
+        notebook.add(editor_tab, text="Universal Editor")
         
-        # Tab 3: PAK Tools with progress bars
+        # Tab 3: Batch File Processing
+        batch_processor = BatchFileProcessor(self.bg3_tool)
+        batch_tab = batch_processor.setup_batch_tab(notebook)
+        notebook.add(batch_tab, text="Batch Processing")
+        
+        # Tab 4: PAK Tools with progress bars
         pak_tab = self.setup_pak_tools_tab(notebook)
         notebook.add(pak_tab, text="PAK Tools")
 
-        # Tab 4: File Manager
+        # Tab 5: File Manager
         file_manager = FileManagerWidget(notebook, self.settings_manager, self.project_manager)
         notebook.add(file_manager.frame, text="Projects")
 
