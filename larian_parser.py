@@ -15,6 +15,7 @@ from collections import defaultdict
 import threading
 import tempfile
 
+
 class UniversalBG3Parser:
     """Universal parser for LSX, LSJ, and LSF files"""
     
@@ -76,7 +77,7 @@ class UniversalBG3Parser:
             return None
     
     def parse_lsx_file(self, file_path):
-        """Parse LSX (XML) files"""
+        """Parse LSX (XML) files with comprehensive structure analysis"""
         try:
             tree = ET.parse(file_path)
             root = tree.getroot()
@@ -88,23 +89,126 @@ class UniversalBG3Parser:
                 'version': root.get('version', 'unknown'),
                 'regions': [],
                 'nodes': [],
+                'attributes': {},
                 'raw_tree': tree
             }
             
-            # Parse structure
+            # Parse regions and nodes with full detail
             for region in root.findall('.//region'):
-                region_info = self._parse_region(region)
+                region_info = {
+                    'id': region.get('id'),
+                    'name': region.get('id'),  # For consistency with LSJ parser
+                    'nodes': []
+                }
+                
+                for node in region.findall('.//node'):
+                    node_info = {
+                        'id': node.get('id'),
+                        'attributes': []
+                    }
+                    
+                    # Parse attributes with full details
+                    for attr in node.findall('.//attribute'):
+                        attr_info = {
+                            'id': attr.get('id'),
+                            'type': attr.get('type'),
+                            'value': attr.get('value'),
+                            'handle': attr.get('handle')
+                        }
+                        node_info['attributes'].append(attr_info)
+                    
+                    region_info['nodes'].append(node_info)
+                
                 self.parsed_data['regions'].append(region_info)
+            
+            # Add schema analysis
+            schema_info = self.get_lsx_schema_info()
+            if schema_info:
+                self.parsed_data['schema_info'] = schema_info
             
             print(f"✅ Parsed LSX file: {file_path}")
             return self.parsed_data
             
         except ET.ParseError as e:
             print(f"❌ XML Parse Error: {e}")
-            return None
+            return f"XML Parse Error: {e}"
         except Exception as e:
             print(f"❌ Error parsing LSX: {e}")
+            return f"Error parsing LSX: {e}"
+    
+    def get_lsx_schema_info(self, lsx_file=None):
+        """Analyze LSX structure and data types"""
+        if lsx_file:
+            self.parse_lsx_file(lsx_file)
+        
+        if not self.parsed_data:
             return None
+        
+        schema_info = {
+            'file_type': self.parsed_data['root_tag'],
+            'regions': {},
+            'data_types': defaultdict(int),
+            'common_attributes': defaultdict(int),
+            'node_types': defaultdict(int)
+        }
+        
+        for region in self.parsed_data['regions']:
+            region_id = region['id']
+            schema_info['regions'][region_id] = {
+                'node_count': len(region['nodes']),
+                'node_types': []
+            }
+            
+            for node in region['nodes']:
+                node_id = node['id']
+                schema_info['node_types'][node_id] += 1
+                schema_info['regions'][region_id]['node_types'].append(node_id)
+                
+                for attr in node['attributes']:
+                    attr_type = attr['type']
+                    attr_id = attr['id']
+                    schema_info['data_types'][attr_type] += 1
+                    schema_info['common_attributes'][attr_id] += 1
+        
+        return schema_info
+    
+    def get_enhanced_file_info(self):
+        """Get comprehensive file information including schema analysis"""
+        if not self.parsed_data:
+            return None
+        
+        info = {
+            'basic_info': {
+                'file': self.parsed_data.get('file'),
+                'format': self.parsed_data.get('format'),
+                'version': self.parsed_data.get('version'),
+                'root_tag': self.parsed_data.get('root_tag')
+            },
+            'structure': {
+                'region_count': len(self.parsed_data.get('regions', [])),
+                'total_nodes': sum(len(region.get('nodes', [])) for region in self.parsed_data.get('regions', [])),
+                'total_attributes': sum(
+                    len(node.get('attributes', [])) 
+                    for region in self.parsed_data.get('regions', [])
+                    for node in region.get('nodes', [])
+                )
+            }
+        }
+        
+        # Add schema info if available
+        if 'schema_info' in self.parsed_data:
+            schema = self.parsed_data['schema_info']
+            info['schema'] = {
+                'data_types': dict(schema['data_types']),
+                'most_common_attributes': dict(sorted(
+                    schema['common_attributes'].items(), 
+                    key=lambda x: x[1], 
+                    reverse=True
+                )[:10]),
+                'node_types': dict(schema['node_types'])
+            }
+        
+        return info
     
     def parse_lsj_file(self, file_path):
         """Parse LSJ (JSON) files"""
@@ -116,28 +220,62 @@ class UniversalBG3Parser:
                 'file': file_path,
                 'format': 'lsj',
                 'root_tag': 'save' if 'save' in json_data else 'root',
-                'version': json_data.get('version', 'unknown'),
                 'regions': [],
                 'raw_data': json_data
             }
             
-            # Parse JSON structure - adapt based on actual LSJ format
+            # Extract version from the proper location
+            if 'save' in json_data and 'header' in json_data['save']:
+                self.parsed_data['version'] = json_data['save']['header'].get('version', 'unknown')
+            else:
+                self.parsed_data['version'] = json_data.get('version', 'unknown')
+            
+            # Parse JSON structure - handle regions as dictionary
             if 'save' in json_data:
                 save_data = json_data['save']
                 if 'regions' in save_data:
-                    for region_data in save_data['regions']:
-                        region_info = self._parse_json_region(region_data)
-                        self.parsed_data['regions'].append(region_info)
+                    regions_dict = save_data['regions']
+                    
+                    # Regions is a dictionary, not a list
+                    if isinstance(regions_dict, dict):
+                        for region_name, region_data in regions_dict.items():
+                            region_info = self._parse_json_region_dict(region_name, region_data)
+                            self.parsed_data['regions'].append(region_info)
+                    elif isinstance(regions_dict, list):
+                        # Handle case where regions might be a list
+                        for region_data in regions_dict:
+                            region_info = self._parse_json_region(region_data)
+                            self.parsed_data['regions'].append(region_info)
             
             print(f"✅ Parsed LSJ file: {file_path}")
             return self.parsed_data
             
         except json.JSONDecodeError as e:
             print(f"❌ JSON Parse Error: {e}")
-            return None
+            return f"JSON Parse Error: {e}"
         except Exception as e:
             print(f"❌ Error parsing LSJ: {e}")
-            return None
+            return f"Error parsing LSJ: {e}"
+
+    def _parse_json_region_dict(self, region_name, region_data):
+        """Parse JSON region data when regions is a dictionary"""
+        region_info = {
+            'id': region_name,
+            'name': region_name,
+            'nodes': [],
+            'data': region_data
+        }
+        
+        # For dialog regions, extract basic info
+        if region_name == 'dialog':
+            if isinstance(region_data, dict):
+                # Extract basic dialog info
+                if 'category' in region_data:
+                    region_info['category'] = region_data['category'].get('value', 'unknown')
+                if 'UUID' in region_data:
+                    region_info['uuid'] = region_data['UUID'].get('value', 'unknown')
+        
+        return region_info
     
     def parse_lsf_file(self, file_path):
         """Parse LSF (binary) files - requires divine.exe conversion"""
@@ -173,11 +311,30 @@ class UniversalBG3Parser:
             print(f"❌ Error parsing LSF: {e}")
             return None
     
+    def set_bg3_tool(self, bg3_tool):
+        """Set the BG3 tool instance for LSF conversion"""
+        self.bg3_tool = bg3_tool
+    
     def _convert_lsf_to_lsx(self, lsf_path, lsx_path):
-        """Convert LSF to LSX using divine.exe - integrate with your wine wrapper"""
-        # This requires a bg3_tool instance - should be injected when needed
-        # For now, return False until we have proper integration
-        return False
+        """Convert LSF to LSX using divine.exe via WineWrapper"""
+        if not self.bg3_tool:
+            print("No BG3 tool available for LSF conversion")
+            return False
+        
+        try:
+            # Use the WineWrapper's convert method
+            success = self.bg3_tool.convert_lsf_to_lsx(lsf_path, lsx_path)
+            
+            if success and os.path.exists(lsx_path):
+                print(f"Successfully converted LSF to LSX: {lsx_path}")
+                return True
+            else:
+                print(f"LSF conversion failed or output file not found")
+                return False
+                
+        except Exception as e:
+            print(f"Error in LSF conversion: {e}")
+            return False
     
     def _parse_region(self, region_element):
         """Parse XML region element"""

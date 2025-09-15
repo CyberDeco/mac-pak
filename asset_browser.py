@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
 """
 BG3 Asset Browser - Simple file dropdown and parser preview
+Refactored to use standalone preview system
 """
 
-import xml.etree.ElementTree as ET
 import os
 from pathlib import Path
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext
 from collections import defaultdict
+import threading
+import tempfile
 
 from larian_parser import UniversalBG3Parser
+from progress_dialog import ProgressDialog
+from preview_manager import FilePreviewManager, get_file_icon
 
 class AssetBrowser:
     """Phase 3: Browse extracted PAK contents and preview LSX files"""
@@ -19,6 +23,12 @@ class AssetBrowser:
         self.bg3_tool = bg3_tool
         self.settings_manager = settings_manager
         self.parser = UniversalBG3Parser()
+        if bg3_tool:
+            self.parser.set_bg3_tool(bg3_tool)
+        
+        # Initialize the preview system
+        self.preview_manager = FilePreviewManager(bg3_tool, self.parser)
+        
         self.current_directory = None
         
         if parent:
@@ -43,6 +53,104 @@ class AssetBrowser:
                 self.settings_manager.set("working_directory", folder_path)
                 
             self.refresh_view()
+
+    def preview_file_with_progress(self, file_path):
+        """Preview file with progress dialog for slow operations"""
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Check if this file type needs progress dialog
+        if file_ext in ['.lsf', '.lsbs', '.lsbc', '.lsfx']:
+            self.preview_file_with_conversion_progress(file_path)
+        else:
+            self.preview_file(file_path)
+    
+    def preview_file_with_conversion_progress(self, file_path):
+        """Preview file with progress dialog for conversion operations"""
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Create progress dialog
+        progress_dialog = ProgressDialog(
+            parent=self.preview_text.winfo_toplevel(),
+            title=f"Converting {file_ext.upper()} File"
+        )
+        
+        def conversion_worker():
+            """Worker thread for file conversion"""
+            try:
+                progress_dialog.update_progress(10, f"Preparing {file_ext.upper()} conversion...")
+                
+                if progress_dialog.is_cancelled():
+                    return
+                
+                # Clear preview first
+                self.preview_text.after(0, lambda: self.clear_preview())
+                
+                # Use the preview manager with progress callback
+                def progress_callback(percent, message):
+                    if not progress_dialog.is_cancelled():
+                        progress_dialog.update_progress(percent, message)
+                
+                preview_data = self.preview_manager.preview_system.preview_file_with_progress(
+                    file_path, progress_callback
+                )
+                
+                if progress_dialog.is_cancelled():
+                    return
+                
+                # Update preview with results
+                self.preview_text.after(0, lambda: self.display_preview_data(preview_data))
+                
+            except Exception as e:
+                error_msg = f"Error converting {file_ext.upper()}: {e}"
+                self.preview_text.after(0, lambda: self.display_error_content(error_msg))
+            finally:
+                # Close progress dialog
+                self.preview_text.after(100, progress_dialog.close)
+        
+        # Start conversion in background thread
+        thread = threading.Thread(target=conversion_worker, daemon=True)
+        thread.start()
+    
+    def clear_preview(self):
+        """Clear the preview pane"""
+        if hasattr(self, 'thumbnail_canvas'):
+            self.thumbnail_canvas.delete("all")
+            if hasattr(self.thumbnail_canvas, 'image'):
+                self.thumbnail_canvas.image = None
+        
+        self.preview_text.config(state='normal')
+        self.preview_text.delete(1.0, tk.END)
+        self.preview_text.config(state='disabled')
+    
+    def display_preview_data(self, preview_data):
+        """Display preview data from the preview system"""
+        self.preview_text.config(state='normal')
+        self.preview_text.delete(1.0, tk.END)
+        
+        # Handle thumbnail if present
+        if hasattr(self, 'thumbnail_canvas') and preview_data.get('thumbnail'):
+            self.thumbnail_canvas.delete("all")
+            
+            canvas_width = self.thumbnail_canvas.winfo_width()
+            canvas_height = self.thumbnail_canvas.winfo_height()
+            
+            if canvas_width > 1 and canvas_height > 1:
+                center_x = canvas_width // 2
+                center_y = canvas_height // 2
+                
+                self.thumbnail_canvas.create_image(center_x, center_y, image=preview_data['thumbnail'])
+                self.thumbnail_canvas.image = preview_data['thumbnail']
+        
+        # Display content
+        self.preview_text.insert(1.0, preview_data['content'])
+        self.preview_text.config(state='disabled')
+    
+    def display_error_content(self, error_msg):
+        """Display error message in preview"""
+        self.preview_text.config(state='normal')
+        self.preview_text.delete(1.0, tk.END)
+        self.preview_text.insert(1.0, error_msg)
+        self.preview_text.config(state='disabled')
     
     def setup_browser_tab(self, parent):
         """Setup the asset browser interface"""
@@ -54,6 +162,7 @@ class AssetBrowser:
         
         ttk.Button(toolbar, text="Browse Folder", command=self.browse_folder).pack(side='left', padx=2)
         ttk.Button(toolbar, text="Refresh", command=self.refresh_view).pack(side='left', padx=2)
+        ttk.Button(toolbar, text="Clear Cache", command=self.clear_cache).pack(side='left', padx=2)
         
         # Search
         ttk.Label(toolbar, text="Filter:").pack(side='left', padx=(10,2))
@@ -93,6 +202,10 @@ class AssetBrowser:
         
         ttk.Label(preview_frame, text="Preview").pack(anchor='w')
         
+        # Add thumbnail canvas
+        self.thumbnail_canvas = tk.Canvas(preview_frame, height=200, bg='white')
+        self.thumbnail_canvas.pack(fill='x', pady=5)
+        
         self.preview_text = scrolledtext.ScrolledText(
             preview_frame,
             font=('Courier', 10),
@@ -108,6 +221,11 @@ class AssetBrowser:
                 self.refresh_view()
         
         return browser_frame
+    
+    def clear_cache(self):
+        """Clear the preview cache"""
+        self.preview_manager.clear_cache()
+        messagebox.showinfo("Cache Cleared", "Preview cache has been cleared.")
     
     def refresh_view(self):
         """Refresh the file tree view"""
@@ -163,28 +281,12 @@ class AssetBrowser:
                         pass  # No placeholder if we can't read the directory
                 else:
                     # Add file with appropriate icon
-                    icon = self.get_file_icon(item)
+                    icon = get_file_icon(item)
                     self.file_tree.insert(parent, 'end', text=f"{icon} {item}", 
                                         values=(item_path,), tags=('file',))
             
         except PermissionError:
-            self.file_tree.insert(parent, 'end', text="❌ Permission Denied")
-    
-    def get_file_icon(self, filename):
-        """Get appropriate icon for file type"""
-        ext = os.path.splitext(filename)[1].lower()
-        
-        icons = {
-            '.lsx': '📄',
-            '.lsf': '🔒',
-            '.xml': '📄',
-            '.txt': '📝',
-            '.dds': '🖼️',
-            '.gr2': '🎭',
-            '.json': '📋'
-        }
-        
-        return icons.get(ext, '📄')
+            self.file_tree.insert(parent, 'end', text="⚠ Permission Denied")
     
     def filter_files(self, *args):
         """Filter files based on search term"""
@@ -203,61 +305,45 @@ class AssetBrowser:
         if values:
             file_path = values[0]
             if os.path.isfile(file_path):
-                self.preview_file(file_path)
-    
+                self.preview_file_with_progress(file_path)
+
     def preview_file(self, file_path):
-        """Preview selected file"""
-        self.preview_text.config(state='normal')
-        self.preview_text.delete(1.0, tk.END)
-        
+        """Preview selected file using the preview manager"""
         try:
-            # Get file info
-            file_size = os.path.getsize(file_path)
-            file_ext = os.path.splitext(file_path)[1].lower()
-            
-            preview_content = f"File: {os.path.basename(file_path)}\n"
-            preview_content += f"Size: {file_size:,} bytes\n"
-            preview_content += f"Type: {file_ext}\n"
-            preview_content += "-" * 50 + "\n\n"
-            
-            if file_ext in ['.lsx', '.lsj', '.xml', '.txt', '.json']:  # Added .lsj here
-                # Text-based files
-                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                    content = f.read(2000)  # First 2KB
-                    preview_content += content
-                    if file_size > 2000:
-                        preview_content += f"\n\n... ({file_size-2000:,} more bytes)"
+            # Clear any existing thumbnail
+            if hasattr(self, 'thumbnail_canvas'):
+                self.thumbnail_canvas.delete("all")
+                if hasattr(self.thumbnail_canvas, 'image'):
+                    self.thumbnail_canvas.image = None
+
+            # Check if file is supported
+            if not self.preview_manager.is_supported(file_path):
+                # Handle unsupported files
+                file_size = os.path.getsize(file_path)
+                file_ext = os.path.splitext(file_path)[1].lower()
                 
-                # If it's a BG3 data file, add structure info
-                if file_ext in ['.lsx', '.lsj', '.lsf']:
-                    try:
-                        parsed_data = self.parser.parse_file(file_path)
-                        if parsed_data:
-                            preview_content += f"\n\n{'='*30}\nBG3 FILE INFO:\n{'='*30}\n"
-                            preview_content += f"Format: {parsed_data['format'].upper()}\n"
-                            preview_content += f"Regions: {len(parsed_data.get('regions', []))}\n"
-                            if parsed_data.get('version'):
-                                preview_content += f"Version: {parsed_data['version']}\n"
-                            
-                            # LSJ-specific info
-                            if file_ext == '.lsj' and 'raw_data' in parsed_data:
-                                raw_data = parsed_data['raw_data']
-                                if isinstance(raw_data, dict):
-                                    preview_content += f"JSON Keys: {list(raw_data.keys())[:5]}\n"
-                    except Exception as e:
-                        preview_content += f"\n\nNote: Could not parse BG3 structure: {e}\n"
+                preview_content = f"File: {os.path.basename(file_path)}\n"
+                preview_content += f"Size: {file_size:,} bytes\n"
+                preview_content += f"Type: {file_ext}\n"
+                preview_content += "-" * 50 + "\n\n"
+                preview_content += f"Unsupported file type: {file_ext}\n"
+                preview_content += "Supported types: " + ", ".join(self.preview_manager.get_supported_extensions())
+                
+                self.preview_text.config(state='normal')
+                self.preview_text.delete(1.0, tk.END)
+                self.preview_text.insert(1.0, preview_content)
+                self.preview_text.config(state='disabled')
+                return
             
-            else:
-                preview_content += f"Binary file - cannot preview\n"
-                preview_content += f"Extension: {file_ext}"
+            # Get preview using the manager
+            preview_data = self.preview_manager.get_preview(file_path, use_cache=True)
             
-            self.preview_text.insert(1.0, preview_content)
+            # Display the preview
+            self.display_preview_data(preview_data)
             
         except Exception as e:
-            self.preview_text.insert(1.0, f"Error previewing file: {e}")
-        
-        finally:
-            self.preview_text.config(state='disabled')
+            self.display_error_content(f"Error previewing file: {e}")
+
 
 class GameAssetOperations:
     """Operations for working with game assets"""

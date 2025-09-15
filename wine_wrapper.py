@@ -523,18 +523,25 @@ class WineWrapper:
                 validation['warnings'].append(f"Optional {folder}/ not found")
         
         return validation
-
     def convert_lsf_to_lsx(self, lsf_path, lsx_path):
         """Convert LSF to LSX using divine.exe"""
         try:
+            # Create output directory if needed
+            os.makedirs(os.path.dirname(lsx_path), exist_ok=True)
+            
             success, output = self.run_divine_command(
                 action="convert-resource",
                 source=self.mac_to_wine_path(lsf_path),
                 destination=self.mac_to_wine_path(lsx_path),
-                input_format="lsf",
-                output_format="lsx"
+                output_format="lsx"  # Remove input_format, divine usually auto-detects
             )
-            return success
+            
+            if success and os.path.exists(lsx_path):
+                return True
+            else:
+                print(f"Divine conversion failed: {output}")
+                return False
+                
         except Exception as e:
             print(f"LSF conversion error: {e}")
             return False
