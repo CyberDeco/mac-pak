@@ -13,7 +13,6 @@ import time
 
 from pathlib import Path
 
-from pak_utils import PAKOperations
 from larian_parser import *
 
 class WineProcessMonitor:
@@ -437,6 +436,77 @@ class WineWrapper:
         )
         
         return success
+
+    def list_pak_contents_threaded(self, pak_file, progress_callback, completion_callback):
+        """List PAK contents in background thread"""
+        def list_worker():
+            try:
+                if progress_callback:
+                    progress_callback(20, "Reading PAK structure...")
+                
+                # Use WineWrapper's list method
+                files = self.wine_wrapper.list_pak_contents(pak_file)
+                
+                if progress_callback:
+                    progress_callback(80, f"Found {len(files)} files...")
+                
+                # Format file information - FIX THE PARSING HERE
+                formatted_files = []
+                for file_info in files:
+                    if isinstance(file_info, dict):
+                        formatted_files.append(file_info)
+                    else:
+                        # Parse the divine.exe output line properly
+                        file_line = str(file_info).strip()
+                        
+                        # Divine.exe output format is typically: "filepath filesize flags"
+                        # Split and take only the first part (the actual file path)
+                        parts = file_line.split()
+                        if parts:
+                            # Extract just the file path (first part before any numeric data)
+                            file_path = parts[0]
+                            
+                            # Handle paths with spaces - reconstruct the path properly
+                            path_parts = []
+                            for part in parts:
+                                if part.isdigit():  # Stop when we hit numeric metadata
+                                    break
+                                path_parts.append(part)
+                            
+                            if path_parts:
+                                file_path = ' '.join(path_parts)
+                                files.append({
+                                    'name': file_path,  # Clean file path only
+                                    'type': os.path.splitext(file_path)[1].lower() if '.' in file_path else 'folder'
+                                })
+                
+                result_data = {
+                    'success': len(formatted_files) > 0,
+                    'files': formatted_files,
+                    'file_count': len(formatted_files),
+                    'pak_file': pak_file
+                }
+                
+                if progress_callback:
+                    progress_callback(100, "Complete!")
+                
+                if completion_callback:
+                    completion_callback(result_data)
+                    
+            except Exception as e:
+                result_data = {
+                    'success': False,
+                    'error': str(e),
+                    'files': [],
+                    'file_count': 0,
+                    'pak_file': pak_file
+                }
+                if completion_callback:
+                    completion_callback(result_data)
+        
+        # Start thread
+        thread = threading.Thread(target=list_worker, daemon=True)
+        thread.start()
     
     def list_pak_contents(self, pak_file):
         """List contents of PAK file"""
@@ -455,10 +525,25 @@ class WineWrapper:
             for line in lines:
                 line = line.strip()
                 if line and not line.startswith('Opening') and not line.startswith('Package') and not line.startswith('Listing'):
-                    files.append({
-                        'name': line,
-                        'type': os.path.splitext(line)[1].lower() if '.' in line else 'folder'
-                    })
+                    # Parse divine.exe output: "filepath filesize flags"
+                    parts = line.split()
+                    if parts:
+                        # Extract just the file path (first part before any numeric data)
+                        file_path = parts[0]
+                        
+                        # Handle paths with spaces - reconstruct the path properly
+                        path_parts = []
+                        for part in parts:
+                            if part.isdigit():  # Stop when we hit numeric metadata
+                                break
+                            path_parts.append(part)
+                        
+                        if path_parts:
+                            file_path = ' '.join(path_parts)
+                            files.append({
+                                'name': file_path,  # Clean file path only
+                                'type': os.path.splitext(file_path)[1].lower() if '.' in file_path else 'folder'
+                            })
             return files
         else:
             return []
@@ -470,48 +555,46 @@ class WineWrapper:
             'structure': [],
             'warnings': []
         }
-
-        meta_found = False
-        
-        # Basic structure check
+    
         if not os.path.exists(mod_dir):
             validation['valid'] = False
             validation['warnings'].append(f"Directory does not exist: {mod_dir}")
             return validation
-
-        # Folders that are game content, not mod content (don't need meta.lsx)
-        game_content_folders = {"GustavDev", "Gustav", "Shared", "Engine", "Game", "Core"}
-        
+    
         # Check for Mods folder (required)
         mods_path = os.path.join(mod_dir, "Mods")
-        if os.path.exists(mods_path):
-            validation['structure'].append("Found Mods/")
-            # Look for mod subfolders
-            mod_subfolders = [d for d in os.listdir(mods_folder) if os.path.isdir(os.path.join(mods_folder, d))]
+        if not os.path.exists(mods_path):
+            validation['valid'] = False
+            validation['warnings'].append("Missing required Mods/")
+            return validation
+        
+        validation['structure'].append("Found Mods/")
+        
+        # Look for mod subfolders
+        meta_found = False
+        try:
+            mod_subfolders = [d for d in os.listdir(mods_path) if os.path.isdir(os.path.join(mods_path, d))]
+            game_content_folders = {"GustavDev", "Gustav", "Shared", "Engine", "Game", "Core"}
+            
             if mod_subfolders:
-                print('yes')
                 for subfolder in mod_subfolders:
                     if subfolder in game_content_folders:
                         validation['structure'].append(f"Game content folder: Mods/{subfolder}/")
                         continue
                     
-                    meta_path = os.path.join(mods_folder, subfolder, "meta.lsx")
+                    meta_path = os.path.join(mods_path, subfolder, "meta.lsx")
                     if os.path.exists(meta_path):
                         validation['structure'].append(f"meta.lsx found in Mods/{subfolder}/")
                         meta_found = True
                     else:
-                        warnings.append(f"meta.lsx missing in Mods/{subfolder}/")
+                        validation['warnings'].append(f"meta.lsx missing in Mods/{subfolder}/")
             else:
-                warnings.append("No mod subfolders found in Mods/")
-        else:
-            warnings.append("Mods/ folder not found")
+                validation['warnings'].append("No mod subfolders found in Mods/")
+        except Exception as e:
+            validation['warnings'].append(f"Error reading Mods folder: {e}")
         
         if not meta_found:
-            warnings.append("No meta.lsx found - this mod may not work properly")
-            
-        else:
-            validation['valid'] = False
-            validation['warnings'].append("Missing required Mods/")
+            validation['warnings'].append("No meta.lsx found - this mod may not work properly")
         
         # Check for optional folders
         optional_folders = ['Public', 'Localization']
@@ -523,25 +606,124 @@ class WineWrapper:
                 validation['warnings'].append(f"Optional {folder}/ not found")
         
         return validation
-    def convert_lsf_to_lsx(self, lsf_path, lsx_path):
-        """Convert LSF to LSX using divine.exe"""
+    
+    def convert_lsx_to_lsf(self, lsx_file, lsf_file):
+        """Convert LSX file to LSF format using divine.exe"""
+        wine_lsx_path = self.mac_to_wine_path(lsx_file)
+        wine_lsf_path = self.mac_to_wine_path(lsf_file)
+        
+        success, output = self.run_divine_command(
+            action="convert-resource",
+            source=wine_lsx_path,
+            destination=wine_lsf_path,
+            input_format="lsx",
+            output_format="lsf"
+        )
+        
+        if success and os.path.exists(lsf_file):
+            print(f"Successfully converted {lsx_file} to {lsf_file}")
+            return True
+        else:
+            print(f"Failed to convert {lsx_file}: {output}")
+            return False
+    
+    def convert_lsf_to_lsx(self, lsf_file, lsx_file):
+        """Convert LSF file to LSX format using divine.exe"""
+        wine_lsf_path = self.mac_to_wine_path(lsf_file)
+        wine_lsx_path = self.mac_to_wine_path(lsx_file)
+        
+        success, output = self.run_divine_command(
+            action="convert-resource",
+            source=wine_lsf_path,
+            destination=wine_lsx_path,
+            input_format="lsf",
+            output_format="lsx"
+        )
+        
+        if success and os.path.exists(lsx_file):
+            print(f"Successfully converted {lsf_file} to {lsx_file}")
+            return True
+        else:
+            print(f"Failed to convert {lsf_file}: {output}")
+            return False
+
+    def analyze_loca_file_binary(self, loca_path):
+        """Analyze .loca file structure without conversion"""
         try:
-            # Create output directory if needed
-            os.makedirs(os.path.dirname(lsx_path), exist_ok=True)
+            with open(loca_path, 'rb') as f:
+                header = f.read(64)
+                file_size = os.path.getsize(loca_path)
+            
+            analysis = {
+                'file_size': file_size,
+                'header_hex': header[:16].hex(),
+                'header_ascii': ''.join(chr(b) if 32 <= b <= 126 else '.' for b in header[:32]),
+                'likely_format': 'unknown'
+            }
+            
+            # Check for common .loca signatures
+            if header.startswith(b'LSOF') or header.startswith(b'LSFW'):
+                analysis['likely_format'] = 'Larian Binary'
+            elif b'xml' in header.lower() or b'<' in header:
+                analysis['likely_format'] = 'XML-based'
+            elif b'content' in header.lower():
+                analysis['likely_format'] = 'Text-based'
+            
+            return analysis
+            
+        except Exception as e:
+            return {'error': str(e)}
+
+    def convert_loca_to_xml(self, loca_path, xml_path):
+        """Convert .loca file to XML using divine.exe"""
+        try:
+            os.makedirs(os.path.dirname(xml_path), exist_ok=True)
             
             success, output = self.run_divine_command(
                 action="convert-resource",
-                source=self.mac_to_wine_path(lsf_path),
-                destination=self.mac_to_wine_path(lsx_path),
-                output_format="lsx"  # Remove input_format, divine usually auto-detects
+                source=self.mac_to_wine_path(loca_path),
+                destination=self.mac_to_wine_path(xml_path),
+                output_format="xml"
             )
             
-            if success and os.path.exists(lsx_path):
+            if success and os.path.exists(xml_path):
                 return True
             else:
-                print(f"Divine conversion failed: {output}")
+                print(f"Loca conversion failed: {output}")
                 return False
                 
         except Exception as e:
-            print(f"LSF conversion error: {e}")
+            print(f"Loca conversion error: {e}")
             return False
+
+    def extract_loca_from_pak(self, pak_path, loca_pattern="*.loca", output_dir=None):
+        """Extract .loca files from PAK"""
+        if not output_dir:
+            output_dir = os.path.splitext(pak_path)[0] + "_loca_extracted"
+        
+        # First extract the entire PAK to a temp location
+        temp_dir = pak_path + "_temp_extract"
+        success = self.extract_pak(pak_path, temp_dir)
+        
+        if success:
+            # Find all .loca files
+            loca_files = []
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    if file.lower().endswith('.loca'):
+                        loca_files.append(os.path.join(root, file))
+            
+            # Copy .loca files to output directory
+            os.makedirs(output_dir, exist_ok=True)
+            for loca_file in loca_files:
+                rel_path = os.path.relpath(loca_file, temp_dir)
+                dest_path = os.path.join(output_dir, rel_path)
+                os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+                shutil.copy2(loca_file, dest_path)
+            
+            # Clean up temp directory
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            
+            return loca_files
+        
+        return []

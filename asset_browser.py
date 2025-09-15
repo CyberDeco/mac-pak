@@ -1,48 +1,360 @@
 #!/usr/bin/env python3
 """
-BG3 Asset Browser - Simple file dropdown and parser preview
-Refactored to use standalone preview system
+BG3 Asset Browser - PyQt6 Version
+Native Mac file browser with preview system
 """
 
 import os
+import sys
 from pathlib import Path
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
-from collections import defaultdict
-import threading
-import tempfile
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget, QTreeWidgetItem,
+    QTextEdit, QLabel, QPushButton, QLineEdit, QGroupBox, QScrollArea,
+    QMessageBox, QFileDialog, QProgressBar, QFrame
+)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
+from PyQt6.QtGui import QFont, QPixmap, QPainter, QIcon
 
+# Import your existing backend classes
 from larian_parser import UniversalBG3Parser
-from progress_dialog import ProgressDialog
 from preview_manager import FilePreviewManager, get_file_icon
 
-class AssetBrowser:
-    """Phase 3: Browse extracted PAK contents and preview LSX files"""
+class FilePreviewThread(QThread):
+    """Thread for handling file previews that might take time"""
+    
+    preview_ready = pyqtSignal(dict)  # preview_data
+    progress_updated = pyqtSignal(int, str)  # percentage, message
+    
+    def __init__(self, preview_manager, file_path):
+        super().__init__()
+        self.preview_manager = preview_manager
+        self.file_path = file_path
+        self.cancelled = False
+    
+    def run(self):
+        """Run preview generation in background"""
+        try:
+            file_ext = os.path.splitext(self.file_path)[1].lower()
+            
+            def progress_callback(percent, message):
+                if not self.cancelled:
+                    self.progress_updated.emit(percent, message)
+            
+            # Use the full preview system with progress
+            preview_data = self.preview_manager.get_preview(
+                self.file_path, use_cache=True, progress_callback=progress_callback
+            )
+            
+            if not self.cancelled:
+                self.preview_ready.emit(preview_data)
+                
+        except Exception as e:
+            if not self.cancelled:
+                error_data = {
+                    'content': f"Error previewing file: {e}",
+                    'thumbnail': None
+                }
+                self.preview_ready.emit(error_data)
+    
+    def cancel(self):
+        """Cancel the preview operation"""
+        self.cancelled = True
+
+class PreviewWidget(QWidget):
+    """Widget for displaying file previews with Mac styling"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setup_ui()
+        self.preview_thread = None
+    
+    def setup_ui(self):
+        """Setup preview widget UI"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
+        
+        # Header
+        header_layout = QHBoxLayout()
+        
+        self.file_label = QLabel("No file selected")
+        self.file_label.setFont(QFont("SF Pro Text", 12, QFont.Weight.Bold))
+        header_layout.addWidget(self.file_label)
+        
+        header_layout.addStretch()
+        
+        # Progress bar (hidden by default)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setMaximumHeight(4)  # Thin Mac-style progress
+        header_layout.addWidget(self.progress_bar)
+        
+        layout.addLayout(header_layout)
+        
+        # Thumbnail area
+        self.thumbnail_label = QLabel()
+        self.thumbnail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.thumbnail_label.setMinimumHeight(200)
+        self.thumbnail_label.setMaximumHeight(200)
+        self.thumbnail_label.setStyleSheet("""
+            QLabel {
+                border: 1px solid #d0d0d0;
+                border-radius: 8px;
+                background-color: #f8f8f8;
+            }
+        """)
+        layout.addWidget(self.thumbnail_label)
+        
+        # Content area
+        self.content_text = QTextEdit()
+        self.content_text.setReadOnly(True)
+        self.content_text.setFont(QFont("SF Mono", 11))  # Mac monospace
+        self.content_text.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #d0d0d0;
+                border-radius: 8px;
+                background-color: white;
+                padding: 8px;
+            }
+        """)
+        layout.addWidget(self.content_text)
+        
+        # Progress label
+        self.progress_label = QLabel("")
+        self.progress_label.setVisible(False)
+        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self.progress_label)
+    
+    def preview_file(self, file_path, preview_manager):
+        """Preview a file with progress indication"""
+        if not file_path or not os.path.isfile(file_path):
+            self.clear_preview()
+            return
+        
+        # Cancel any existing preview
+        if self.preview_thread and self.preview_thread.isRunning():
+            self.preview_thread.cancel()
+            self.preview_thread.quit()
+            self.preview_thread.wait(1000)
+        
+        # Update header
+        self.file_label.setText(os.path.basename(file_path))
+        
+        # Check if file is supported
+        if not preview_manager.is_supported(file_path):
+            self.show_unsupported_file(file_path, preview_manager)
+            return
+        
+        # Check if this file might need progress indication
+        file_ext = os.path.splitext(file_path)[1].lower()
+        if file_ext in ['.lsf', '.lsbs', '.lsbc', '.lsfx']:
+            self.show_progress(True)
+        
+        # Start preview thread
+        self.preview_thread = FilePreviewThread(preview_manager, file_path)
+        self.preview_thread.preview_ready.connect(self.display_preview)
+        self.preview_thread.progress_updated.connect(self.update_progress)
+        self.preview_thread.start()
+    
+    def show_unsupported_file(self, file_path, preview_manager):
+        """Show info for unsupported file types"""
+        file_size = os.path.getsize(file_path)
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        content = f"File: {os.path.basename(file_path)}\n"
+        content += f"Size: {file_size:,} bytes\n"
+        content += f"Type: {file_ext}\n"
+        content += "-" * 50 + "\n\n"
+        content += f"Unsupported file type: {file_ext}\n"
+        content += "Supported types: " + ", ".join(preview_manager.get_supported_extensions())
+        
+        self.content_text.setPlainText(content)
+        self.thumbnail_label.clear()
+        self.thumbnail_label.setText("📄\nUnsupported File")
+        self.show_progress(False)
+    
+    def display_preview(self, preview_data):
+        """Display preview data from thread"""
+        self.show_progress(False)
+        
+        # Display content
+        self.content_text.setPlainText(preview_data.get('content', ''))
+        
+        # Display thumbnail if available (for DDS files)
+        if preview_data.get('thumbnail'):
+            thumbnail = preview_data['thumbnail']
+            # The thumbnail from preview_manager is already a PhotoImage/QPixmap
+            if hasattr(thumbnail, 'width'):  # PhotoImage
+                try:
+                    # Convert PhotoImage to QPixmap if needed
+                    # For now, just show text indicator
+                    self.thumbnail_label.setText("🖼️\nThumbnail Available")
+                except:
+                    self.thumbnail_label.setText("🖼️\nPreview Available")
+            else:
+                self.thumbnail_label.setText("🖼️\nThumbnail Available")
+        else:
+            self.thumbnail_label.clear()
+            self.thumbnail_label.setText("📄\nText Preview")
+    
+    def show_progress(self, show):
+        """Show or hide progress indicators"""
+        self.progress_bar.setVisible(show)
+        self.progress_label.setVisible(show)
+        
+        if not show:
+            self.progress_bar.setValue(0)
+            self.progress_label.setText("")
+    
+    def update_progress(self, percentage, message):
+        """Update progress display"""
+        self.progress_bar.setValue(percentage)
+        self.progress_label.setText(message)
+    
+    def clear_preview(self):
+        """Clear the preview display"""
+        self.file_label.setText("No file selected")
+        self.content_text.clear()
+        self.thumbnail_label.clear()
+        self.thumbnail_label.setText("Select a file to preview")
+        self.show_progress(False)
+
+class AssetBrowserTab(QWidget):
+    """Asset Browser tab for the main application"""
     
     def __init__(self, parent=None, bg3_tool=None, settings_manager=None):
+        super().__init__(parent)
+        
         self.bg3_tool = bg3_tool
         self.settings_manager = settings_manager
         self.parser = UniversalBG3Parser()
+        
         if bg3_tool:
             self.parser.set_bg3_tool(bg3_tool)
         
-        # Initialize the preview system
+        # Initialize preview system
         self.preview_manager = FilePreviewManager(bg3_tool, self.parser)
         
         self.current_directory = None
+        self.setup_ui()
         
-        if parent:
-            self.setup_browser_tab(parent)
+        # Load initial directory if available
+        if settings_manager:
+            working_dir = settings_manager.get("working_directory")
+            if working_dir and os.path.exists(working_dir):
+                self.current_directory = working_dir
+                self.refresh_view()
+    
+    def setup_ui(self):
+        """Setup the asset browser interface with Mac styling"""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        
+        # Title
+        title_label = QLabel("Asset Browser")
+        title_font = QFont()
+        title_font.setPointSize(18)
+        title_font.setBold(True)
+        title_label.setFont(title_font)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        
+        # Toolbar
+        toolbar_layout = QHBoxLayout()
+        
+        self.browse_btn = QPushButton("Browse Folder")
+        self.browse_btn.clicked.connect(self.browse_folder)
+        toolbar_layout.addWidget(self.browse_btn)
+        
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.refresh_view)
+        toolbar_layout.addWidget(self.refresh_btn)
+        
+        self.clear_cache_btn = QPushButton("Clear Cache")
+        self.clear_cache_btn.clicked.connect(self.clear_cache)
+        toolbar_layout.addWidget(self.clear_cache_btn)
+        
+        toolbar_layout.addStretch()
+        
+        # Search
+        search_label = QLabel("Filter:")
+        toolbar_layout.addWidget(search_label)
+        
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("Search files...")
+        self.search_edit.textChanged.connect(self.filter_files)
+        self.search_edit.setMaximumWidth(200)
+        toolbar_layout.addWidget(self.search_edit)
+        
+        layout.addLayout(toolbar_layout)
+        
+        # Main content - horizontal splitter
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Left: File tree
+        tree_frame = QFrame()
+        tree_frame.setFrameStyle(QFrame.Shape.StyledPanel)
+        tree_layout = QVBoxLayout(tree_frame)
+        tree_layout.setContentsMargins(10, 10, 10, 10)
+        
+        tree_label = QLabel("Files")
+        tree_label.setFont(QFont("SF Pro Text", 12, QFont.Weight.Bold))
+        tree_layout.addWidget(tree_label)
+        
+        self.file_tree = QTreeWidget()
+        self.file_tree.setHeaderLabel("Name")
+        self.file_tree.setRootIsDecorated(True)
+        self.file_tree.setUniformRowHeights(True)
+        self.file_tree.setAnimated(True)  # Mac-style animations
+        self.file_tree.itemSelectionChanged.connect(self.on_file_select)
+        self.file_tree.itemExpanded.connect(self.on_item_expanded)
+        
+        # Apply Mac-style tree styling
+        self.file_tree.setStyleSheet("""
+            QTreeWidget {
+                border: 1px solid #d0d0d0;
+                border-radius: 8px;
+                background-color: white;
+                alternate-background-color: #f8f8f8;
+                selection-background-color: #007AFF;
+                outline: none;
+            }
+            QTreeWidget::item {
+                height: 24px;
+                padding: 2px;
+            }
+            QTreeWidget::item:selected {
+                background-color: #007AFF;
+                color: white;
+            }
+            QTreeWidget::item:hover {
+                background-color: #e3f2fd;
+            }
+        """)
+        
+        tree_layout.addWidget(self.file_tree)
+        splitter.addWidget(tree_frame)
+        
+        # Right: Preview pane
+        self.preview_widget = PreviewWidget()
+        splitter.addWidget(self.preview_widget)
+        
+        # Set splitter sizes (1/3 for tree, 2/3 for preview)
+        splitter.setSizes([300, 600])
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        
+        layout.addWidget(splitter)
     
     def browse_folder(self):
-        """Browse for extracted PAK folder"""
-        initial_dir = "/"
+        """Browse for extracted PAK folder using native Mac dialog"""
+        initial_dir = str(Path.home())
         if self.settings_manager:
-            initial_dir = self.settings_manager.get("working_directory", "/")
+            initial_dir = self.settings_manager.get("working_directory", initial_dir)
         
-        folder_path = filedialog.askdirectory(
-            title="Select Extracted PAK Folder",
-            initialdir=initial_dir
+        folder_path = QFileDialog.getExistingDirectory(
+            self, "Select Extracted PAK Folder", initial_dir
         )
         
         if folder_path:
@@ -51,373 +363,126 @@ class AssetBrowser:
             # Update working directory
             if self.settings_manager:
                 self.settings_manager.set("working_directory", folder_path)
-                
+            
             self.refresh_view()
-
-    def preview_file_with_progress(self, file_path):
-        """Preview file with progress dialog for slow operations"""
-        file_ext = os.path.splitext(file_path)[1].lower()
-        
-        # Check if this file type needs progress dialog
-        if file_ext in ['.lsf', '.lsbs', '.lsbc', '.lsfx']:
-            self.preview_file_with_conversion_progress(file_path)
-        else:
-            self.preview_file(file_path)
-    
-    def preview_file_with_conversion_progress(self, file_path):
-        """Preview file with progress dialog for conversion operations"""
-        file_ext = os.path.splitext(file_path)[1].lower()
-        
-        # Create progress dialog
-        progress_dialog = ProgressDialog(
-            parent=self.preview_text.winfo_toplevel(),
-            title=f"Converting {file_ext.upper()} File"
-        )
-        
-        def conversion_worker():
-            """Worker thread for file conversion"""
-            try:
-                progress_dialog.update_progress(10, f"Preparing {file_ext.upper()} conversion...")
-                
-                if progress_dialog.is_cancelled():
-                    return
-                
-                # Clear preview first
-                self.preview_text.after(0, lambda: self.clear_preview())
-                
-                # Use the preview manager with progress callback
-                def progress_callback(percent, message):
-                    if not progress_dialog.is_cancelled():
-                        progress_dialog.update_progress(percent, message)
-                
-                preview_data = self.preview_manager.preview_system.preview_file_with_progress(
-                    file_path, progress_callback
-                )
-                
-                if progress_dialog.is_cancelled():
-                    return
-                
-                # Update preview with results
-                self.preview_text.after(0, lambda: self.display_preview_data(preview_data))
-                
-            except Exception as e:
-                error_msg = f"Error converting {file_ext.upper()}: {e}"
-                self.preview_text.after(0, lambda: self.display_error_content(error_msg))
-            finally:
-                # Close progress dialog
-                self.preview_text.after(100, progress_dialog.close)
-        
-        # Start conversion in background thread
-        thread = threading.Thread(target=conversion_worker, daemon=True)
-        thread.start()
-    
-    def clear_preview(self):
-        """Clear the preview pane"""
-        if hasattr(self, 'thumbnail_canvas'):
-            self.thumbnail_canvas.delete("all")
-            if hasattr(self.thumbnail_canvas, 'image'):
-                self.thumbnail_canvas.image = None
-        
-        self.preview_text.config(state='normal')
-        self.preview_text.delete(1.0, tk.END)
-        self.preview_text.config(state='disabled')
-    
-    def display_preview_data(self, preview_data):
-        """Display preview data from the preview system"""
-        self.preview_text.config(state='normal')
-        self.preview_text.delete(1.0, tk.END)
-        
-        # Handle thumbnail if present
-        if hasattr(self, 'thumbnail_canvas') and preview_data.get('thumbnail'):
-            self.thumbnail_canvas.delete("all")
-            
-            canvas_width = self.thumbnail_canvas.winfo_width()
-            canvas_height = self.thumbnail_canvas.winfo_height()
-            
-            if canvas_width > 1 and canvas_height > 1:
-                center_x = canvas_width // 2
-                center_y = canvas_height // 2
-                
-                self.thumbnail_canvas.create_image(center_x, center_y, image=preview_data['thumbnail'])
-                self.thumbnail_canvas.image = preview_data['thumbnail']
-        
-        # Display content
-        self.preview_text.insert(1.0, preview_data['content'])
-        self.preview_text.config(state='disabled')
-    
-    def display_error_content(self, error_msg):
-        """Display error message in preview"""
-        self.preview_text.config(state='normal')
-        self.preview_text.delete(1.0, tk.END)
-        self.preview_text.insert(1.0, error_msg)
-        self.preview_text.config(state='disabled')
-    
-    def setup_browser_tab(self, parent):
-        """Setup the asset browser interface"""
-        browser_frame = ttk.Frame(parent)
-        
-        # Top toolbar
-        toolbar = ttk.Frame(browser_frame)
-        toolbar.pack(fill='x', padx=5, pady=2)
-        
-        ttk.Button(toolbar, text="Browse Folder", command=self.browse_folder).pack(side='left', padx=2)
-        ttk.Button(toolbar, text="Refresh", command=self.refresh_view).pack(side='left', padx=2)
-        ttk.Button(toolbar, text="Clear Cache", command=self.clear_cache).pack(side='left', padx=2)
-        
-        # Search
-        ttk.Label(toolbar, text="Filter:").pack(side='left', padx=(10,2))
-        self.search_var = tk.StringVar()
-        self.search_var.trace('w', self.filter_files)
-        search_entry = ttk.Entry(toolbar, textvariable=self.search_var, width=20)
-        search_entry.pack(side='left', padx=2)
-        
-        # Main layout - split pane
-        main_pane = ttk.PanedWindow(browser_frame, orient='horizontal')
-        main_pane.pack(fill='both', expand=True, padx=5, pady=5)
-        
-        # Left: File tree
-        tree_frame = ttk.Frame(main_pane)
-        main_pane.add(tree_frame, weight=1)
-        
-        ttk.Label(tree_frame, text="Files").pack(anchor='w')
-        
-        self.file_tree = ttk.Treeview(tree_frame, selectmode='browse')
-        self.file_tree.heading('#0', text='File Name')
-        self.file_tree.pack(fill='both', expand=True)
-
-        # Add this binding for tree expansion
-        self.file_tree.bind('<<TreeviewOpen>>', self.on_tree_expand)
-        
-        # Scrollbar for tree
-        tree_scroll = ttk.Scrollbar(tree_frame, orient='vertical', command=self.file_tree.yview)
-        tree_scroll.pack(side='right', fill='y')
-        self.file_tree.configure(yscrollcommand=tree_scroll.set)
-        
-        # Bind selection
-        self.file_tree.bind('<<TreeviewSelect>>', self.on_file_select)
-        
-        # Right: Preview pane
-        preview_frame = ttk.Frame(main_pane)
-        main_pane.add(preview_frame, weight=2)
-        
-        ttk.Label(preview_frame, text="Preview").pack(anchor='w')
-        
-        # Add thumbnail canvas
-        self.thumbnail_canvas = tk.Canvas(preview_frame, height=200, bg='white')
-        self.thumbnail_canvas.pack(fill='x', pady=5)
-        
-        self.preview_text = scrolledtext.ScrolledText(
-            preview_frame,
-            font=('Courier', 10),
-            state='disabled'
-        )
-        self.preview_text.pack(fill='both', expand=True)
-
-        # Auto-load working directory at startup
-        if self.settings_manager:
-            working_dir = self.settings_manager.get("working_directory")
-            if working_dir and os.path.exists(working_dir):
-                self.current_directory = working_dir
-                self.refresh_view()
-        
-        return browser_frame
-    
-    def clear_cache(self):
-        """Clear the preview cache"""
-        self.preview_manager.clear_cache()
-        messagebox.showinfo("Cache Cleared", "Preview cache has been cleared.")
     
     def refresh_view(self):
         """Refresh the file tree view"""
         if not self.current_directory:
             return
         
-        # Clear existing items
-        for item in self.file_tree.get_children():
-            self.file_tree.delete(item)
+        self.file_tree.clear()
+        self.populate_tree(self.current_directory, None)
         
-        # Populate tree
-        self.populate_tree(self.current_directory, '')
-
-    def on_tree_expand(self, event):
-        """Handle expanding tree nodes"""
-        item = self.file_tree.selection()[0] if self.file_tree.selection() else None
-        if not item:
-            item = self.file_tree.focus()
-        
-        if item:
-            # Check if this item has the "Loading..." placeholder
-            children = self.file_tree.get_children(item)
-            if children and self.file_tree.item(children[0])['text'] == "Loading...":
-                # Remove the placeholder
-                self.file_tree.delete(children[0])
-                
-                # Get the directory path for this item
-                values = self.file_tree.item(item)['values']
-                if values and os.path.isdir(values[0]):
-                    # Populate the actual contents
-                    self.populate_tree(values[0], item)
+        # Clear preview
+        self.preview_widget.clear_preview()
     
-    def populate_tree(self, directory, parent):
-        """Recursively populate the file tree"""
+    def populate_tree(self, directory, parent_item):
+        """Populate tree with directory contents"""
         try:
             items = []
-            for item in os.listdir(directory):
-                if item.startswith('.'):  # Skip hidden files
-                    continue
-                    
-                item_path = os.path.join(directory, item)
-                if os.path.isdir(item_path):
-                    # Add folder
-                    folder_id = self.file_tree.insert(parent, 'end', text=f"📁 {item}", 
-                                                    values=(item_path,), tags=('folder',))
-                    
-                    # Check if this folder has contents to decide if it should be expandable
-                    try:
-                        if any(not f.startswith('.') for f in os.listdir(item_path)):
-                            # Add placeholder to make it expandable
-                            self.file_tree.insert(folder_id, 'end', text="Loading...")
-                    except (PermissionError, OSError):
-                        pass  # No placeholder if we can't read the directory
-                else:
-                    # Add file with appropriate icon
-                    icon = get_file_icon(item)
-                    self.file_tree.insert(parent, 'end', text=f"{icon} {item}", 
-                                        values=(item_path,), tags=('file',))
             
+            # Get directory contents
+            for item_name in sorted(os.listdir(directory)):
+                if item_name.startswith('.'):  # Skip hidden files
+                    continue
+                
+                item_path = os.path.join(directory, item_name)
+                
+                # Create tree item
+                if parent_item:
+                    tree_item = QTreeWidgetItem(parent_item)
+                else:
+                    tree_item = QTreeWidgetItem(self.file_tree)
+                
+                # Set item data
+                tree_item.setData(0, Qt.ItemDataRole.UserRole, item_path)
+                
+                if os.path.isdir(item_path):
+                    # Directory
+                    tree_item.setText(0, f"📁 {item_name}")
+                    tree_item.setChildIndicatorPolicy(
+                        QTreeWidgetItem.ChildIndicatorPolicy.ShowIndicator
+                    )
+                    # Add placeholder for lazy loading
+                    placeholder = QTreeWidgetItem(tree_item)
+                    placeholder.setText(0, "Loading...")
+                    placeholder.setData(0, Qt.ItemDataRole.UserRole, "placeholder")
+                else:
+                    # File
+                    icon = get_file_icon(item_name)
+                    tree_item.setText(0, f"{icon} {item_name}")
+                    tree_item.setChildIndicatorPolicy(
+                        QTreeWidgetItem.ChildIndicatorPolicy.DontShowIndicator
+                    )
+        
         except PermissionError:
-            self.file_tree.insert(parent, 'end', text="⚠ Permission Denied")
+            if parent_item:
+                error_item = QTreeWidgetItem(parent_item)
+            else:
+                error_item = QTreeWidgetItem(self.file_tree)
+            error_item.setText(0, "⚠️ Permission Denied")
     
-    def filter_files(self, *args):
-        """Filter files based on search term"""
-        # Simple implementation - would need enhancement for real filtering
-        pass
-    
-    def on_file_select(self, event):
-        """Handle file selection"""
-        selection = self.file_tree.selection()
-        if not selection:
+    def on_item_expanded(self, item):
+        """Handle tree item expansion for lazy loading"""
+        item_path = item.data(0, Qt.ItemDataRole.UserRole)
+        
+        if not item_path or not os.path.isdir(item_path):
             return
         
-        item = selection[0]
-        values = self.file_tree.item(item)['values']
-        
-        if values:
-            file_path = values[0]
-            if os.path.isfile(file_path):
-                self.preview_file_with_progress(file_path)
-
-    def preview_file(self, file_path):
-        """Preview selected file using the preview manager"""
-        try:
-            # Clear any existing thumbnail
-            if hasattr(self, 'thumbnail_canvas'):
-                self.thumbnail_canvas.delete("all")
-                if hasattr(self.thumbnail_canvas, 'image'):
-                    self.thumbnail_canvas.image = None
-
-            # Check if file is supported
-            if not self.preview_manager.is_supported(file_path):
-                # Handle unsupported files
-                file_size = os.path.getsize(file_path)
-                file_ext = os.path.splitext(file_path)[1].lower()
-                
-                preview_content = f"File: {os.path.basename(file_path)}\n"
-                preview_content += f"Size: {file_size:,} bytes\n"
-                preview_content += f"Type: {file_ext}\n"
-                preview_content += "-" * 50 + "\n\n"
-                preview_content += f"Unsupported file type: {file_ext}\n"
-                preview_content += "Supported types: " + ", ".join(self.preview_manager.get_supported_extensions())
-                
-                self.preview_text.config(state='normal')
-                self.preview_text.delete(1.0, tk.END)
-                self.preview_text.insert(1.0, preview_content)
-                self.preview_text.config(state='disabled')
-                return
-            
-            # Get preview using the manager
-            preview_data = self.preview_manager.get_preview(file_path, use_cache=True)
-            
-            # Display the preview
-            self.display_preview_data(preview_data)
-            
-        except Exception as e:
-            self.display_error_content(f"Error previewing file: {e}")
-
-
-class GameAssetOperations:
-    """Operations for working with game assets"""
+        # Check if this has the loading placeholder
+        if item.childCount() == 1:
+            child = item.child(0)
+            if child.data(0, Qt.ItemDataRole.UserRole) == "placeholder":
+                # Remove placeholder and populate real contents
+                item.removeChild(child)
+                self.populate_tree(item_path, item)
     
-    def __init__(self, bg3_tool):
-        self.bg3_tool = bg3_tool
-        self.asset_index = {}
+    def on_file_select(self):
+        """Handle file selection"""
+        selected_items = self.file_tree.selectedItems()
+        if not selected_items:
+            self.preview_widget.clear_preview()
+            return
+        
+        item = selected_items[0]
+        file_path = item.data(0, Qt.ItemDataRole.UserRole)
+        
+        if file_path and os.path.isfile(file_path):
+            self.preview_widget.preview_file(file_path, self.preview_manager)
+        else:
+            self.preview_widget.clear_preview()
     
-    def extract_specific_asset_threaded(self, pak_file, asset_path, destination, progress_callback=None, completion_callback=None):
-        """Extract a specific asset from a PAK file"""
+    def filter_files(self):
+        """Filter files based on search term"""
+        search_term = self.search_edit.text().lower()
         
-        def extraction_worker():
-            try:
-                if progress_callback:
-                    progress_callback(10, "Extracting specific asset...")
-                
-                import tempfile
-                import shutil
-                
-                # Create temporary extraction directory
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    if progress_callback:
-                        progress_callback(30, "Extracting PAK to temporary location...")
-                    
-                    # Extract entire PAK to temp
-                    success, output = self.bg3_tool.extract_pak_with_monitoring(
-                        pak_file, temp_dir, 
-                        lambda pct, msg: progress_callback(30 + (pct * 0.5), msg) if progress_callback else None
-                    )
-                    
-                    if not success:
-                        raise Exception(f"Failed to extract PAK: {output}")
-                    
-                    if progress_callback:
-                        progress_callback(80, "Locating target asset...")
-                    
-                    # Find the specific asset
-                    source_asset = os.path.join(temp_dir, asset_path.replace('/', os.sep))
-                    
-                    if os.path.exists(source_asset):
-                        if progress_callback:
-                            progress_callback(90, "Copying asset to destination...")
-                        
-                        # Create destination directory if needed
-                        os.makedirs(os.path.dirname(destination), exist_ok=True)
-                        
-                        # Copy the asset
-                        shutil.copy2(source_asset, destination)
-                        
-                        if progress_callback:
-                            progress_callback(100, "Asset extracted successfully!")
-                        
-                        if completion_callback:
-                            completion_callback({
-                                'success': True,
-                                'source_pak': pak_file,
-                                'asset_path': asset_path,
-                                'destination': destination
-                            })
-                    else:
-                        raise Exception(f"Asset not found in PAK: {asset_path}")
-                
-            except Exception as e:
-                if progress_callback:
-                    progress_callback(0, f"Error: {e}")
-                if completion_callback:
-                    completion_callback({
-                        'success': False,
-                        'error': str(e),
-                        'source_pak': pak_file,
-                        'asset_path': asset_path
-                    })
+        def filter_item(item):
+            """Recursively filter tree items"""
+            item_text = item.text(0).lower()
+            
+            # Check if item matches search
+            matches = search_term in item_text
+            
+            # Check children
+            visible_children = 0
+            for i in range(item.childCount()):
+                child = item.child(i)
+                if filter_item(child):
+                    visible_children += 1
+            
+            # Item is visible if it matches or has visible children
+            visible = matches or visible_children > 0 or not search_term
+            item.setHidden(not visible)
+            
+            return visible
         
-        # Start in background thread
-        thread = threading.Thread(target=extraction_worker, daemon=True)
-        thread.start()
-        return thread
+        # Apply filter to all top-level items
+        for i in range(self.file_tree.topLevelItemCount()):
+            item = self.file_tree.topLevelItem(i)
+            filter_item(item)
+    
+    def clear_cache(self):
+        """Clear the preview cache"""
+        self.preview_manager.clear_cache()
+        QMessageBox.information(self, "Cache Cleared", "Preview cache has been cleared.")

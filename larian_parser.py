@@ -15,7 +15,6 @@ from collections import defaultdict
 import threading
 import tempfile
 
-
 class UniversalBG3Parser:
     """Universal parser for LSX, LSJ, and LSF files"""
     
@@ -34,6 +33,8 @@ class UniversalBG3Parser:
             return 'lsj'
         elif ext == '.lsf':
             return 'lsf'
+        elif ext == '.loca':
+            return 'loca'
         else:
             # Try to detect by content
             try:
@@ -72,9 +73,67 @@ class UniversalBG3Parser:
             return self.parse_lsj_file(file_path)
         elif self.file_format == 'lsf':
             return self.parse_lsf_file(file_path)
+        elif self.file_format == 'loca':  # Add this
+            return self.parse_loca_file(file_path)
         else:
             print(f"❌ Unsupported file format: {file_path}")
             return None
+
+    def parse_loca_file(self, file_path):
+        """Parse .loca files by converting to XML first"""
+        try:
+            # Convert .loca to XML using divine.exe
+            temp_xml = file_path + '.temp.xml'
+            
+            if not self.bg3_tool:
+                return "Error: No BG3 tool available for .loca conversion"
+            
+            success = self.bg3_tool.convert_loca_to_xml(file_path, temp_xml)
+            
+            if success and os.path.exists(temp_xml):
+                # Parse the converted XML
+                tree = ET.parse(temp_xml)
+                root = tree.getroot()
+                
+                self.parsed_data = {
+                    'file': file_path,
+                    'format': 'loca',
+                    'root_tag': root.tag,
+                    'version': root.get('version', 'unknown'),
+                    'entries': [],
+                    'string_count': 0,
+                    'raw_tree': tree
+                }
+                
+                # Parse localization entries
+                entries = []
+                for content_list in root.findall('.//contentList'):
+                    for content in content_list.findall('content'):
+                        entry = {
+                            'handle': content.get('contentuid', ''),
+                            'version': content.get('version', ''),
+                            'text': content.text or ''
+                        }
+                        entries.append(entry)
+                
+                self.parsed_data['entries'] = entries
+                self.parsed_data['string_count'] = len(entries)
+                
+                # Clean up temp file
+                try:
+                    os.remove(temp_xml)
+                except:
+                    pass
+                
+                print(f"Parsed .loca file: {file_path} ({len(entries)} strings)")
+                return self.parsed_data
+                
+            else:
+                return f"Failed to convert .loca file: {file_path}"
+                
+        except Exception as e:
+            print(f"Error parsing .loca: {e}")
+            return f"Error parsing .loca: {e}"
     
     def parse_lsx_file(self, file_path):
         """Parse LSX (XML) files with comprehensive structure analysis"""
@@ -400,3 +459,308 @@ class UniversalBG3Parser:
                 region_info['nodes'].append(node_info)
         
         return region_info
+        
+class AutoConversionProcessor:
+    """Handles automatic file conversions during mod workspace preparation"""
+    
+    def __init__(self, wine_wrapper):
+        self.wine_wrapper = wine_wrapper
+        self.conversion_log = []
+    
+    def find_conversion_files(self, workspace_path):
+        """
+        Find files that need conversion in workspace
+        
+        Args:
+            workspace_path: Path to mod workspace
+            
+        Returns:
+            dict: Files organized by conversion type
+        """
+        conversion_files = {
+            'lsf_conversions': [],  # .lsf.lsx -> .lsf
+            'lsb_conversions': [],  # .lsb.lsx -> .lsb
+            'lsbs_conversions': [], # .lsbs.lsx -> .lsbs
+            'other_conversions': []
+        }
+        
+        try:
+            for root, dirs, files in os.walk(workspace_path):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    file_lower = file.lower()
+                    
+                    if file_lower.endswith('.lsf.lsx'):
+                        conversion_files['lsf_conversions'].append({
+                            'source': file_path,
+                            'relative_path': os.path.relpath(file_path, workspace_path),
+                            'target_ext': '.lsf'
+                        })
+                    elif file_lower.endswith('.lsb.lsx'):
+                        conversion_files['lsb_conversions'].append({
+                            'source': file_path,
+                            'relative_path': os.path.relpath(file_path, workspace_path),
+                            'target_ext': '.lsb'
+                        })
+                    elif file_lower.endswith('.lsbs.lsx'):
+                        conversion_files['lsbs_conversions'].append({
+                            'source': file_path,
+                            'relative_path': os.path.relpath(file_path, workspace_path),
+                            'target_ext': '.lsbs'
+                        })
+                    elif file_lower.endswith('.lsbc.lsx'):
+                        conversion_files['other_conversions'].append({
+                            'source': file_path,
+                            'relative_path': os.path.relpath(file_path, workspace_path),
+                            'target_ext': '.lsbc'
+                        })
+        
+        except Exception as e:
+            print(f"Error scanning workspace: {e}")
+        
+        return conversion_files
+    
+    def prepare_workspace_for_packing(self, workspace_path, progress_callback=None):
+        """
+        Prepare workspace by converting files and creating temp copy
+        
+        Args:
+            workspace_path: Original workspace path
+            progress_callback: Optional progress callback
+            
+        Returns:
+            dict: Results with temp_path, conversions, and errors
+        """
+        conversion_files = self.find_conversion_files(workspace_path)
+        total_conversions = sum(len(files) for files in conversion_files.values())
+        
+        if total_conversions == 0:
+            return {
+                'temp_path': workspace_path,
+                'conversions': [],
+                'errors': [],
+                'cleanup_needed': False
+            }
+        
+        if progress_callback:
+            progress_callback(5, f"Found {total_conversions} files to convert")
+        
+        # Create temporary workspace
+        temp_workspace = tempfile.mkdtemp(prefix="bg3_workspace_")
+        
+        try:
+            if progress_callback:
+                progress_callback(10, "Copying workspace to temporary location...")
+            
+            # Copy entire workspace to temp
+            shutil.copytree(workspace_path, os.path.join(temp_workspace, "workspace"))
+            temp_workspace_path = os.path.join(temp_workspace, "workspace")
+            
+            if progress_callback:
+                progress_callback(30, "Starting file conversions...")
+            
+            conversions = []
+            errors = []
+            processed = 0
+            
+            # Process each conversion type
+            for conversion_type, files in conversion_files.items():
+                for file_info in files:
+                    try:
+                        # Convert the file in temp workspace
+                        temp_source = os.path.join(temp_workspace_path, file_info['relative_path'])
+                        result = self.convert_file(temp_source, file_info['target_ext'])
+                        
+                        conversions.append({
+                            'original_path': file_info['source'],
+                            'temp_path': temp_source,
+                            'target_path': result.get('target_path'),
+                            'conversion_type': conversion_type,
+                            'success': result['success']
+                        })
+                        
+                        if not result['success']:
+                            errors.append(result['error'])
+                        
+                    except Exception as e:
+                        errors.append(f"Error converting {file_info['relative_path']}: {e}")
+                    
+                    processed += 1
+                    if progress_callback:
+                        percent = 30 + int((processed / total_conversions) * 60)
+                        progress_callback(percent, f"Converted {processed}/{total_conversions} files")
+            
+            if progress_callback:
+                progress_callback(95, "Finalizing prepared workspace...")
+            
+            result = {
+                'temp_path': temp_workspace_path,
+                'conversions': conversions,
+                'errors': errors,
+                'cleanup_needed': True,
+                'temp_root': temp_workspace
+            }
+            
+            if progress_callback:
+                success_count = sum(1 for c in conversions if c['success'])
+                progress_callback(100, f"Converted {success_count}/{total_conversions} files successfully")
+            
+            return result
+            
+        except Exception as e:
+            # Clean up on error
+            try:
+                shutil.rmtree(temp_workspace)
+            except:
+                pass
+            
+            return {
+                'temp_path': workspace_path,
+                'conversions': [],
+                'errors': [f"Workspace preparation failed: {e}"],
+                'cleanup_needed': False
+            }
+    
+    def convert_file(self, source_file, target_ext):
+        """
+        Convert a single file to target format
+        
+        Args:
+            source_file: Source .lsx file
+            target_ext: Target extension (.lsf, .lsb, etc.)
+            
+        Returns:
+            dict: Conversion result
+        """
+        try:
+            # Generate target filename
+            source_path = Path(source_file)
+            
+            # Remove the .lsx extension and any previous extension
+            name_without_lsx = source_path.name[:-4]  # Remove .lsx
+            
+            # If it ends with .lsf, .lsb, etc., remove that too
+            if name_without_lsx.endswith(('.lsf', '.lsb', '.lsbs', '.lsbc')):
+                base_name = name_without_lsx.rsplit('.', 1)[0]
+            else:
+                base_name = name_without_lsx
+            
+            target_file = source_path.parent / (base_name + target_ext)
+            
+            # Perform conversion using wine_wrapper
+            if target_ext == '.lsf':
+                success = self.wine_wrapper.convert_lsx_to_lsf(str(source_file), str(target_file))
+            elif target_ext in ['.lsb', '.lsbs', '.lsbc']:
+                # These might use different conversion methods
+                success = self.wine_wrapper.convert_lsx_to_lsf(str(source_file), str(target_file))
+            else:
+                return {
+                    'success': False,
+                    'error': f"Unsupported target format: {target_ext}"
+                }
+            
+            if success:
+                # Remove the original .lsx file
+                os.remove(source_file)
+                
+                return {
+                    'success': True,
+                    'source_path': str(source_file),
+                    'target_path': str(target_file)
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': f"Conversion failed for {source_file}"
+                }
+                
+        except Exception as e:
+            return {
+                'success': False,
+                'error': f"Exception during conversion: {e}"
+            }
+    
+    def cleanup_temp_workspace(self, temp_root):
+        """Clean up temporary workspace"""
+        try:
+            if temp_root and os.path.exists(temp_root):
+                shutil.rmtree(temp_root)
+                return True
+        except Exception as e:
+            print(f"Warning: Could not clean up temp workspace: {e}")
+            return False
+        return True
+
+class AutoConversionDialog:
+    """Dialog for showing conversion progress and results"""
+    
+    @staticmethod
+    def show_conversion_preview(parent, conversion_files):
+        """Show preview of files that will be converted"""
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
+            QPushButton, QHBoxLayout, QTextEdit
+        )
+        
+        dialog = QDialog(parent)
+        dialog.setWindowTitle("Auto-Conversion Preview")
+        dialog.setModal(True)
+        dialog.resize(600, 400)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Info
+        total_files = sum(len(files) for files in conversion_files.values())
+        info_label = QLabel(f"Found {total_files} files that will be automatically converted:")
+        layout.addWidget(info_label)
+        
+        # File tree
+        tree = QTreeWidget()
+        tree.setHeaderLabels(['File', 'Conversion', 'Location'])
+        
+        for conversion_type, files in conversion_files.items():
+            if not files:
+                continue
+                
+            # Create category item
+            category_item = QTreeWidgetItem(tree)
+            category_item.setText(0, conversion_type.replace('_', ' ').title())
+            category_item.setText(1, f"{len(files)} files")
+            
+            for file_info in files:
+                file_item = QTreeWidgetItem(category_item)
+                file_name = os.path.basename(file_info['source'])
+                file_item.setText(0, file_name)
+                file_item.setText(1, f"→ {file_info['target_ext']}")
+                file_item.setText(2, file_info['relative_path'])
+        
+        tree.expandAll()
+        layout.addWidget(tree)
+        
+        # Info text
+        info_text = QTextEdit()
+        info_text.setMaximumHeight(100)
+        info_text.setPlainText(
+            "These files will be converted during PAK creation:\n"
+            "• .lsf.lsx files will become .lsf files\n"
+            "• .lsb.lsx files will become .lsb files\n"
+            "• Original .lsx files will be preserved in your workspace"
+        )
+        layout.addWidget(info_text)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+        
+        proceed_btn = QPushButton("Proceed with Conversion")
+        proceed_btn.clicked.connect(dialog.accept)
+        proceed_btn.setDefault(True)
+        button_layout.addWidget(proceed_btn)
+        
+        layout.addLayout(button_layout)
+        
+        return dialog.exec() == QDialog.DialogCode.Accepted

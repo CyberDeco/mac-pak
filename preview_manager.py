@@ -82,6 +82,8 @@ class FilePreviewTools:
             elif file_ext == '.dds':
                 preview_content += self._preview_dds_file(file_path)
                 preview_data['thumbnail'] = self._generate_dds_thumbnail(file_path)
+            elif file_ext == '.loca':
+                preview_content += self._preview_loca_file(file_path)
             else:
                 preview_content += f"Binary file - cannot preview\nExtension: {file_ext}"
             
@@ -654,6 +656,83 @@ class FilePreviewTools:
             
             return f"Format: {format_name}\n"
         return "Format: Unknown\n"
+
+    def _preview_loca_file(self, file_path):
+        """Preview .loca files"""
+        try:
+            content = "Localization File (.loca)\n\n"
+            
+            # Try using the LocaManager for parsing
+            from loca_manager import LocaManager
+            loca_manager = LocaManager(self.bg3_tool, None)
+            
+            parsed_data = loca_manager.parse_loca_file(file_path)
+            
+            if parsed_data and parsed_data.get('entries'):
+                entries = parsed_data['entries']
+                content += f"Successfully parsed!\n"
+                content += f"Method: {parsed_data.get('format', 'unknown')}\n"
+                content += f"Total entries: {len(entries)}\n\n"
+                
+                if entries:
+                    content += "Sample entries:\n"
+                    content += "-" * 50 + "\n"
+                    
+                    for i, entry in enumerate(entries[:5]):
+                        content += f"#{i+1}\n"
+                        content += f"Handle: {entry['handle']}\n"
+                        if entry['text']:
+                            preview_text = entry['text'][:150]
+                            if len(entry['text']) > 150:
+                                preview_text += "..."
+                            content += f"Text: {preview_text}\n"
+                        content += "\n"
+                    
+                    if len(entries) > 5:
+                        content += f"... and {len(entries) - 5} more entries\n"
+            else:
+                content += "Could not parse .loca file.\n"
+                content += self._analyze_loca_binary_fallback(file_path)
+            
+            return content
+            
+        except Exception as e:
+            return f"Error previewing .loca file: {e}\n"
+    
+    def _analyze_loca_binary_fallback(self, file_path):
+        """Fallback binary analysis when divine.exe isn't available"""
+        try:
+            with open(file_path, 'rb') as f:
+                data = f.read(512)  # Read first 512 bytes
+            
+            content = "\nBinary Analysis:\n"
+            content += f"File size: {os.path.getsize(file_path):,} bytes\n"
+            
+            # Look for text patterns
+            if b'content' in data.lower():
+                content += "Contains 'content' - likely localization data\n"
+            
+            if b'handle' in data.lower():
+                content += "Contains 'handle' - likely UUID references\n"
+            
+            # Check for compression
+            if data.startswith(b'\x1f\x8b'):
+                content += "Format: GZIP compressed\n"
+            elif data.startswith(b'PK'):
+                content += "Format: ZIP compressed\n"
+            elif data.startswith(b'LSOF'):
+                content += "Format: Larian binary (LSOF)\n"
+            else:
+                content += "Format: Unknown binary\n"
+            
+            # Show readable strings
+            readable_chars = ''.join(chr(b) if 32 <= b <= 126 else '.' for b in data[:100])
+            content += f"Header preview: {readable_chars}\n"
+            
+            return content
+            
+        except Exception as e:
+            return f"\nBinary analysis failed: {e}\n"
     
     def _analyze_larian_binary(self, file_path, file_ext):
         """Basic binary analysis for unknown Larian formats"""
@@ -1029,12 +1108,13 @@ class FilePreviewManager:
     def clear_cache(self):
         """Clear the preview cache"""
         self.cache.clear()
-    
+
     def get_supported_extensions(self):
         """Get list of supported file extensions"""
         return [
             '.lsx', '.lsj', '.xml', '.txt', '.json',  # Text files
             '.lsf', '.lsfx', '.lsbs', '.lsbc',        # Binary Larian formats
+            '.loca',                                  # Localization files
             '.gr2',                                   # Granny 3D models
             '.bshd', '.shd',                         # Shader files
             '.dds'                                   # DirectDraw Surface textures
@@ -1044,6 +1124,8 @@ class FilePreviewManager:
         """Check if a file is supported for preview"""
         ext = os.path.splitext(file_path)[1].lower()
         return ext in self.get_supported_extensions()
+
+    
 
 
 # Standalone utility functions
@@ -1068,7 +1150,8 @@ def get_file_icon(filename):
         '.shd': '⚙️',
         '.lsbs': '📦',
         '.lsbc': '📦',
-        '.lsfx': '🔈'
+        '.lsfx': '🔈',
+        '.loca': '🗄️',
     }
     
     return icons.get(ext, '📄')
