@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-Launch script for BG3 Mac Modding Toolkit - PyQt6 Version
-Save this as: launch.py
+Entry point for BG3 Toolkit.
 """
 
 import sys
 import os
 from pathlib import Path
-
-# Add the current directory to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import Qt
+import PyQt6.QtCore
 
 def main():
     """Main application entry point"""
@@ -22,9 +21,6 @@ def main():
     
     # Check for PyQt6
     try:
-        from PyQt6.QtWidgets import QApplication
-        from PyQt6.QtCore import Qt
-        import PyQt6.QtCore
         print(f"Using PyQt6 version: {PyQt6.QtCore.PYQT_VERSION_STR}")
     except ImportError as e:
         print(f"Error: PyQt6 not found. Please install with: pip install PyQt6")
@@ -50,8 +46,8 @@ def main():
         # Use native Mac file dialogs
         app.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, False)
         
-        # Import the main window class
-        from main_window import BG3ModToolkitMainWindow
+        # Import the main window class (using relative import since this is in the package)
+        from .ui.main_window import BG3ModToolkitMainWindow
         
         # Create and show main window
         window = BG3ModToolkitMainWindow()
@@ -62,11 +58,7 @@ def main():
         
     except ImportError as e:
         print(f"Error importing application components: {e}")
-        print("Make sure all required files are in the same directory:")
-        print("- main_window.py")
-        print("- pak_operations.py") 
-        print("- wine_wrapper.py")
-        print("- larian_parser.py")
+        print("Make sure all required files are in the correct package structure")
         sys.exit(1)
     except Exception as e:
         print(f"Error starting application: {e}")

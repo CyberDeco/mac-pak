@@ -13,7 +13,7 @@ import time
 
 from pathlib import Path
 
-from larian_parser import *
+from ..data.parsers.larian_parser import *
 
 class WineProcessMonitor:
     """Monitor Wine processes with real-time output and cancellation support"""

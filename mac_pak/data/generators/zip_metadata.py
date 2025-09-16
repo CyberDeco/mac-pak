@@ -10,7 +10,7 @@ import zipfile
 import uuid
 from datetime import datetime
 from pathlib import Path
-from PyQt6.QtCore import QThread, pyqtSignal
+from PyQt6.QtCore import QThread, pyqtSignal, Qt
 
 class ModMetadataGenerator:
     """Generates metadata files for BG3 mods"""
