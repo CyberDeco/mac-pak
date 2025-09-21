@@ -13,7 +13,7 @@ from PyQt6.QtGui import QFont
 
 from ..widgets.asset_browser.preview_manager import FilePreviewManager, PreviewWidget, get_file_icon
 from ..widgets.pak_tools.drop_label import DropLabel
-from ..widgets.settings_dialog import SettingsDialog
+from ..dialogs.settings_dialog import SettingsDialog
 
 from ..threads.pak_operations_thread import DivineOperationThread, ConversionPAKThread
 from ...data.parsers.larian_parser import UniversalBG3Parser
@@ -22,18 +22,18 @@ from ...data.parsers.larian_parser import UniversalBG3Parser
 class AssetBrowserTab(QWidget):
     """Asset Browser tab for the main application"""
     
-    def __init__(self, parent=None, bg3_tool=None, settings_manager=None):
+    def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
         
-        self.bg3_tool = bg3_tool
+        self.wine_wrapper = wine_wrapper
         self.settings_manager = settings_manager
         self.parser = UniversalBG3Parser()
         
-        if bg3_tool:
-            self.parser.set_bg3_tool(bg3_tool)
+        if wine_wrapper:
+            self.parser.set_wine_wrapper(wine_wrapper)
         
         # Initialize preview system
-        self.preview_manager = FilePreviewManager(bg3_tool, self.parser)
+        self.preview_manager = FilePreviewManager(wine_wrapper, self.parser)
         
         self.current_directory = None
         self.setup_ui()

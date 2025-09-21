@@ -12,18 +12,20 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QTabWidget, QGroupBox, 
     QFileDialog, QMessageBox, QStatusBar, QMenuBar
 )
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QTimer
 from PyQt6.QtGui import QAction, QFont
 
 # Import core components with correct paths
 from ..core.settings import SettingsManager
+from ..core.update_checker import UpdateChecker
+from ..dialogs.update_dialog import UpdateDialog
 from ..tools.wine_wrapper import WineWrapper
 from .tabs.pak_tools_tab import PakToolsTab
 from .tabs.assets_browser_tab import AssetBrowserTab
 from .tabs.universal_editor_tab import UniversalEditorTab
 from .tabs.index_search_tab import IndexSearchTab
 from .tabs.uuid_generator_tab import BG3IDGeneratorTab
-from .widgets.settings_dialog import SettingsDialog
+from .dialogs.settings_dialog import SettingsDialog
 
 class BG3ModToolkitMainWindow(QMainWindow):
     """Main application window with native Mac styling and threading support"""
@@ -48,6 +50,38 @@ class BG3ModToolkitMainWindow(QMainWindow):
         
         # Restore window state
         self.restore_window_state()
+
+        # Check for updates on startup (optional)
+        QTimer.singleShot(3000, self.check_for_updates)  # Check after 3 seconds
+    
+    def check_for_updates(self, show_no_update_message=False):
+        """Check for updates"""
+        def check_updates_worker():
+            checker = UpdateChecker()
+            return checker.check_for_updates()
+        
+        def handle_update_result(result):
+            if result.get('error'):
+                if show_no_update_message:
+                    QMessageBox.warning(self, "Update Check", f"Failed to check for updates: {result['error']}")
+                return
+            
+            if result['update_available']:
+                # Check if user already skipped this version
+                settings = SettingsManager()
+                skipped_version = settings.get("skipped_version", "")
+                
+                if skipped_version != result['latest_version']:
+                    dialog = UpdateDialog(result, self)
+                    dialog.exec()
+            elif show_no_update_message:
+                QMessageBox.information(self, "No Updates", "You're running the latest version!")
+        
+        # Run in background thread
+        worker = QThread()
+        worker.run = check_updates_worker
+        worker.finished.connect(lambda: handle_update_result(worker.result))
+        worker.start()
     
     def setup_window_properties(self):
         """Setup main window properties with Mac styling"""
@@ -123,11 +157,11 @@ class BG3ModToolkitMainWindow(QMainWindow):
         """Setup all tabs with proper error handling"""
         try:
             # Create tabs - pass whatever wine_wrapper we have (could be None)
-            asset_tab = AssetBrowserTab(self, self.wine_wrapper, self.settings_manager)
-            editor_tab = UniversalEditorTab(self, self.wine_wrapper, self.settings_manager)
-            pak_tab = PakToolsTab(self, self.wine_wrapper, self.settings_manager)
-            index_search_tab = IndexSearchTab(self, self.wine_wrapper, self.settings_manager)
-            id_generator_tab = BG3IDGeneratorTab(self, self.wine_wrapper, self.settings_manager)
+            asset_tab = AssetBrowserTab(self, self.settings_manager, self.wine_wrapper)
+            editor_tab = UniversalEditorTab(self, self.settings_manager, self.wine_wrapper)
+            pak_tab = PakToolsTab(self, self.settings_manager, self.wine_wrapper)
+            index_search_tab = IndexSearchTab(self, self.settings_manager, self.wine_wrapper)
+            id_generator_tab = BG3IDGeneratorTab(self, self.settings_manager, self.wine_wrapper)
 
             # Add tabs to the widget
             self.tab_widget.addTab(asset_tab, "Asset Browser")

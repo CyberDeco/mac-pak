@@ -3,6 +3,8 @@
 Progress bar funcs
 """
 
+import os
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QPushButton
 from PyQt6.QtCore import Qt
 

@@ -10,7 +10,7 @@ import threading
 from pathlib import Path
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar, QTextEdit
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPixmap
 from PyQt6.QtCore import Qt
 
 from ...threads.file_preview import FilePreviewThread
@@ -148,6 +148,7 @@ class PreviewWidget(QWidget):
                     Qt.TransformationMode.SmoothTransformation
                 )
                 self.thumbnail_label.setPixmap(scaled_pixmap)
+                return
             else:
                 self.thumbnail_label.setText("🖼️\nImage Preview")
         else:
@@ -197,23 +198,15 @@ class PreviewWidget(QWidget):
 class FilePreviewTools:
     """Standalone file preview system for BG3 assets"""
     
-    def __init__(self, bg3_tool=None, parser=None):
+    def __init__(self, wine_wrapper=None, parser=None):
         """
         Initialize the preview system
         
         Args:
-            bg3_tool: Optional BG3Tool instance for file conversions
+            wine_wrapper: Optional BG3Tool instance for file conversions
             parser: Optional UniversalBG3Parser instance for parsing
         """
-        self.bg3_tool = bg3_tool
-        self.parser = parser
-    
-    def set_bg3_tool(self, bg3_tool):
-        """Set the BG3 tool for file conversions"""
-        self.bg3_tool = bg3_tool
-    
-    def set_parser(self, parser):
-        """Set the parser for BG3 file analysis"""
+        self.wine_wrapper = wine_wrapper
         self.parser = parser
     
     def preview_file(self, file_path):
@@ -263,7 +256,7 @@ class FilePreviewTools:
                 preview_content += self._preview_lsf_file(file_path)
             elif file_ext == '.lsfx':
                 preview_content += self._preview_lsfx_file(file_path)
-            elif file_ext == '.dds':
+            elif file_ext == '.dds' or 'DDS' in file_path:
                 preview_content += self._preview_dds_file(file_path)
                 preview_data['thumbnail'] = self._generate_dds_thumbnail(file_path)
             elif file_ext == '.loca':
@@ -642,7 +635,7 @@ class FilePreviewTools:
         """Preview LSBS/LSBC files"""
         try:
             # Try conversion first if we have the tools
-            if self.bg3_tool:
+            if self.wine_wrapper:
                 temp_lsx = None
                 try:
                     with tempfile.NamedTemporaryFile(suffix='.lsx', delete=False) as tmp:
@@ -692,7 +685,7 @@ class FilePreviewTools:
     
     def _preview_lsf_file(self, file_path):
         """Preview LSF files with conversion"""
-        if not self.bg3_tool:
+        if not self.wine_wrapper:
             return self._analyze_larian_binary(file_path, '.lsf')
         
         temp_lsx = None
@@ -701,7 +694,7 @@ class FilePreviewTools:
                 temp_lsx = tmp.name
             
             # Convert LSF to LSX
-            success = self.bg3_tool.convert_lsf_to_lsx(file_path, temp_lsx)
+            success = self.wine_wrapper.convert_lsf_to_lsx(file_path, temp_lsx)
             
             if success and os.path.exists(temp_lsx) and self.parser:
                 parsed_data = self.parser.parse_lsx_file(temp_lsx)
@@ -734,7 +727,7 @@ class FilePreviewTools:
     
     def _preview_lsfx_file(self, file_path):
         """Preview LSFX files with conversion"""
-        if not self.bg3_tool:
+        if not self.wine_wrapper:
             return self._analyze_larian_binary(file_path, '.lsfx')
         
         temp_lsx = None
@@ -848,7 +841,7 @@ class FilePreviewTools:
             
             # Try using the LocaManager for parsing
             from loca_manager import LocaManager
-            loca_manager = LocaManager(self.bg3_tool, None)
+            loca_manager = LocaManager(self.wine_wrapper, None)
             
             parsed_data = loca_manager.parse_loca_file(file_path)
             
@@ -944,30 +937,12 @@ class FilePreviewTools:
             return f"Error analyzing {file_ext.upper()} file: {e}\n"
     
     def _generate_dds_thumbnail(self, file_path, max_size=(180, 180)):
-        """Generate DDS thumbnail using multiple methods"""
+        """Generate DDS thumbnail using multiple methods for PyQt6"""
         
-        # Method 1: Try Wand/ImageMagick first
+        # Method 1: Try PIL with DDS support first (most reliable for DDS)
         try:
-            from wand.image import Image as WandImage
-            from PIL import Image, ImageTk
+            from PIL import Image
             import io
-            
-            with WandImage(filename=file_path) as img:
-                img.thumbnail(max_size[0], max_size[1])
-                img_buffer = io.BytesIO()
-                img.format = 'png'
-                img.save(img_buffer)
-                img_buffer.seek(0)
-                
-                pil_img = Image.open(img_buffer)
-                return ImageTk.PhotoImage(pil_img)
-                
-        except Exception as e:
-            print(f"Wand thumbnail generation failed: {e}")
-        
-        # Method 2: Try PIL with DDS support
-        try:
-            from PIL import Image, ImageTk
             
             with Image.open(file_path) as img:
                 # Convert to RGB if needed
@@ -982,22 +957,53 @@ class FilePreviewTools:
                     img = img.convert('RGB')
                 
                 img.thumbnail(max_size, Image.Resampling.LANCZOS)
-                return ImageTk.PhotoImage(img)
+                
+                # Convert PIL Image to QPixmap
+                img_buffer = io.BytesIO()
+                img.save(img_buffer, format='PNG')
+                img_buffer.seek(0)
+                
+                pixmap = QPixmap()
+                pixmap.loadFromData(img_buffer.getvalue())
+                return pixmap
                 
         except Exception as e:
-            print(f"PIL thumbnail generation failed: {e}")
+            print(f"PIL DDS thumbnail generation failed: {e}")
         
-        # Method 3: Generate informative placeholder
+        # Method 2: Try Wand/ImageMagick as fallback
+        try:
+            from wand.image import Image as WandImage
+            import io
+            
+            with WandImage(filename=file_path) as img:
+                img.thumbnail(max_size[0], max_size[1])
+                img_buffer = io.BytesIO()
+                img.format = 'png'
+                img.save(img_buffer)
+                img_buffer.seek(0)
+                
+                pixmap = QPixmap()
+                pixmap.loadFromData(img_buffer.getvalue())
+                return pixmap
+                
+        except Exception as e:
+            print(f"Wand thumbnail generation failed: {e}")
+        
+        # Method 3: Generate informative placeholder when both methods fail
         return self._create_dds_info_placeholder(file_path, max_size)
-    
+
     def _create_dds_info_placeholder(self, file_path, canvas_size=(180, 180)):
         """Create an informative placeholder when thumbnail generation fails"""
+        from PyQt6.QtGui import QPixmap, QPainter, QFont, QColor
+        from PyQt6.QtCore import Qt
+        
         try:
-            from PIL import Image, ImageDraw, ImageFont, ImageTk
+            # Create a QPixmap
+            pixmap = QPixmap(canvas_size[0], canvas_size[1])
+            pixmap.fill(QColor(220, 220, 220))  # Light gray background
             
-            # Create a new image
-            img = Image.new('RGB', canvas_size, color='lightgray')
-            draw = ImageDraw.Draw(img)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
             
             # Get DDS info
             with open(file_path, 'rb') as f:
@@ -1008,22 +1014,25 @@ class FilePreviewTools:
                 height = int.from_bytes(header[12:16], 'little')
                 
                 # Draw border
-                draw.rectangle([5, 5, canvas_size[0]-5, canvas_size[1]-5], outline='black', width=2)
+                painter.setPen(QColor(0, 0, 0))
+                painter.drawRect(5, 5, canvas_size[0]-10, canvas_size[1]-10)
                 
-                # Add text info
+                # Set up fonts
+                font = QFont("Arial", 12)
+                small_font = QFont("Arial", 10)
+                
                 center_x = canvas_size[0] // 2
                 
-                try:
-                    font = ImageFont.truetype("Arial.ttf", 12)
-                    small_font = ImageFont.truetype("Arial.ttf", 10)
-                except:
-                    font = ImageFont.load_default()
-                    small_font = font
-                
                 # Draw text
-                draw.text((center_x, 30), "DDS TEXTURE", anchor="mm", fill='black', font=font)
-                draw.text((center_x, 50), f"{width}x{height}", anchor="mm", fill='blue', font=small_font)
-                draw.text((center_x, 70), "Preview unavailable", anchor="mm", fill='red', font=small_font)
+                painter.setFont(font)
+                painter.drawText(center_x - 50, 30, 100, 20, Qt.AlignmentFlag.AlignCenter, "DDS TEXTURE")
+                
+                painter.setFont(small_font)
+                painter.setPen(QColor(0, 0, 255))
+                painter.drawText(center_x - 50, 50, 100, 20, Qt.AlignmentFlag.AlignCenter, f"{width}x{height}")
+                
+                painter.setPen(QColor(255, 0, 0))
+                painter.drawText(center_x - 70, 70, 140, 20, Qt.AlignmentFlag.AlignCenter, "Preview unavailable")
                 
                 # Determine texture type
                 filename = os.path.basename(file_path).lower()
@@ -1038,44 +1047,49 @@ class FilePreviewTools:
                 else:
                     texture_type = "Unknown Type"
                 
-                draw.text((center_x, 90), texture_type, anchor="mm", fill='darkblue', font=small_font)
+                painter.setPen(QColor(0, 0, 139))
+                painter.drawText(center_x - 60, 90, 120, 20, Qt.AlignmentFlag.AlignCenter, texture_type)
             
-            return ImageTk.PhotoImage(img)
+            painter.end()
+            return pixmap
             
         except Exception as e:
-            print(f"Placeholder creation failed: {e}")
-            return None
+            print(f"QPixmap placeholder creation failed: {e}")
+            # Return a simple gray pixmap as last resort
+            pixmap = QPixmap(canvas_size[0], canvas_size[1])
+            pixmap.fill(QColor(200, 200, 200))
+            return pixmap
     
     # Conversion helper methods
     def _try_lsbs_conversion(self, lsbs_path, output_path):
         """Try to convert LSBS file using divine.exe"""
-        if not self.bg3_tool:
+        if not self.wine_wrapper:
             return False
         
         try:
-            success = self.bg3_tool.convert_lsf_to_lsx(lsbs_path, output_path)
+            success = self.wine_wrapper.convert_lsf_to_lsx(lsbs_path, output_path)
             return success
         except:
             return False
     
     def _try_lsbc_conversion(self, lsbc_path, output_path):
         """Try to convert LSBC file using divine.exe"""
-        if not self.bg3_tool:
+        if not self.wine_wrapper:
             return False
         
         try:
-            success = self.bg3_tool.convert_lsf_to_lsx(lsbc_path, output_path)
+            success = self.wine_wrapper.convert_lsf_to_lsx(lsbc_path, output_path)
             return success
         except:
             return False
 
     def _try_lsfx_conversion(self, lsfx_path, output_path):
         """Try to convert LSFX file using divine.exe"""
-        if not self.bg3_tool:
+        if not self.wine_wrapper:
             return False
         
         try:
-            success = self.bg3_tool.convert_lsf_to_lsx(lsfx_path, output_path)
+            success = self.wine_wrapper.convert_lsf_to_lsx(lsfx_path, output_path)
             return success
         except:
             return False
@@ -1126,7 +1140,7 @@ class FilePreviewTools:
                 
                 # Do the actual conversion
                 if file_ext == '.lsf':
-                    success = self.bg3_tool.convert_lsf_to_lsx(file_path, temp_lsx) if self.bg3_tool else False
+                    success = self.wine_wrapper.convert_lsf_to_lsx(file_path, temp_lsx) if self.wine_wrapper else False
                 elif file_ext == '.lsfx':
                     success = self._try_lsfx_conversion(file_path, temp_lsx)
                 elif file_ext in ['.lsbs', '.lsbc']:
@@ -1261,8 +1275,8 @@ class FilePreviewTools:
 class FilePreviewManager:
     """Manager class for handling multiple file previews"""
     
-    def __init__(self, bg3_tool=None, parser=None):
-        self.preview_system = FilePreviewTools(bg3_tool, parser)
+    def __init__(self, wine_wrapper=None, parser=None):
+        self.preview_system = FilePreviewTools(wine_wrapper, parser)
         self.cache = {}
         self.cache_size_limit = 100
     
@@ -1309,13 +1323,10 @@ class FilePreviewManager:
         ext = os.path.splitext(file_path)[1].lower()
         return ext in self.get_supported_extensions()
 
-    
-
-
 # Standalone utility functions
-def preview_file_quick(file_path, bg3_tool=None, parser=None):
+def preview_file_quick(file_path, wine_wrapper=None, parser=None):
     """Quick file preview without manager overhead"""
-    preview_system = FilePreviewTools(bg3_tool, parser)
+    preview_system = FilePreviewTools(wine_wrapper, parser)
     return preview_system.preview_file(file_path)
 
 def get_file_icon(filename):

@@ -7,7 +7,8 @@ import os
 from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtWidgets import QFileDialog, QMessageBox
 
-from ...data.parsers.larian_parser import AutoConversionProcessor, AutoConversionDialog
+from ...data.parsers.larian_parser import AutoConversionProcessor
+from ..dialogs.autoconversion_dialog import AutoConversionDialog
 
 class ConversionPAKThread(QThread):
     """Enhanced PAK operation thread with auto-conversion support"""

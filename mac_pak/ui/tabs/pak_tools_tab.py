@@ -14,14 +14,14 @@ from PyQt6.QtGui import QFont
 
 # Import components with fallbacks
 from ..widgets.pak_tools.drop_label import DropLabel
-from ..widgets.progress_dialog import ProgressDialog
 from ..threads.pak_operations_thread import DivineOperationThread, ConversionPAKThread, IndividualExtractionThread
 
 from ...data.handlers.pak_operations import PAKOperations, IndividualFileExtractor
 from ..dialogs.file_selection_dialog import FileSelectionDialog
+from ..dialogs.progress_dialog import ProgressDialog
 
 class PakToolsTab(QWidget):
-    def __init__(self, parent, wine_wrapper, settings_manager):
+    def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__()
         self.parent_window = parent
         self.wine_wrapper = wine_wrapper

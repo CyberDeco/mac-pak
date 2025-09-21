@@ -17,3 +17,4 @@ sys.dont_write_bytecode = True
 if __name__ == "__main__":
     from mac_pak.launch import main
     main()
+

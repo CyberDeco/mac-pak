@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 BG3 Enhanced LSX Tools - Support for LSX, LSJ, and LSF formats
-Extended from original LSX tools to handle all BG3 data formats
+Extended with comprehensive PyQt6 threading support for better performance
 """
 
 import xml.etree.ElementTree as ET
@@ -9,19 +9,207 @@ import json
 import os
 import struct
 from pathlib import Path
-import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext
 from collections import defaultdict
-import threading
 import tempfile
+import shutil
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from typing import Optional, Callable, Dict, List, Any
+import logging
+
+from PyQt6.QtCore import (
+    QThread, QObject, pyqtSignal, QMutex, QMutexLocker, 
+    QTimer, QRunnable, QThreadPool, pyqtSlot
+)
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QTreeWidget, 
+    QTreeWidgetItem, QPushButton, QTextEdit, QProgressBar,
+    QDialogButtonBox, QTabWidget, QWidget, QSplitter,
+    QMessageBox, QApplication
+)
+from PyQt6.QtGui import QFont, QIcon
+from PyQt6.QtCore import Qt
+
+# Configure logging for thread-safe operations
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(threadName)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+@dataclass
+class ProgressUpdate:
+    """Thread-safe progress update container"""
+    current: int
+    total: int
+    message: str
+    stage: str = ""
+    error: Optional[str] = None
+
+@dataclass
+class ParseResult:
+    """Thread-safe parse result container"""
+    success: bool
+    data: Optional[Dict] = None
+    error: Optional[str] = None
+    file_path: str = ""
+    processing_time: float = 0.0
+
+class ThreadSafeCounter:
+    """Thread-safe counter for tracking operations across threads"""
+    def __init__(self, initial_value: int = 0):
+        self._value = initial_value
+        self._mutex = QMutex()
+    
+    def increment(self, amount: int = 1) -> int:
+        with QMutexLocker(self._mutex):
+            self._value += amount
+            return self._value
+    
+    def get_value(self) -> int:
+        with QMutexLocker(self._mutex):
+            return self._value
+    
+    def set_value(self, value: int):
+        with QMutexLocker(self._mutex):
+            self._value = value
+
+class FileParserWorker(QObject):
+    """Worker thread for parsing individual files"""
+    
+    # Signals for thread communication
+    progress_updated = pyqtSignal(ProgressUpdate)
+    parsing_completed = pyqtSignal(ParseResult)
+    error_occurred = pyqtSignal(str, str)  # error_message, file_path
+    
+    def __init__(self, parser_instance, file_path: str):
+        super().__init__()
+        self.parser = parser_instance
+        self.file_path = file_path
+        self.should_stop = False
+        self._mutex = QMutex()
+    
+    @pyqtSlot()
+    def parse_file(self):
+        """Parse file in worker thread"""
+        start_time = time.time()
+        
+        try:
+            with QMutexLocker(self._mutex):
+                if self.should_stop:
+                    return
+            
+            self.progress_updated.emit(ProgressUpdate(
+                current=0, total=100, 
+                message=f"Starting parse: {os.path.basename(self.file_path)}",
+                stage="initializing"
+            ))
+            
+            # Perform the actual parsing
+            result_data = self.parser.parse_file(self.file_path)
+            
+            processing_time = time.time() - start_time
+            
+            if result_data and not isinstance(result_data, str):
+                # Success
+                result = ParseResult(
+                    success=True,
+                    data=result_data,
+                    file_path=self.file_path,
+                    processing_time=processing_time
+                )
+                self.parsing_completed.emit(result)
+                self.progress_updated.emit(ProgressUpdate(
+                    current=100, total=100,
+                    message=f"Completed: {os.path.basename(self.file_path)}",
+                    stage="completed"
+                ))
+            else:
+                # Error case
+                error_msg = result_data if isinstance(result_data, str) else "Unknown parsing error"
+                result = ParseResult(
+                    success=False,
+                    error=error_msg,
+                    file_path=self.file_path,
+                    processing_time=processing_time
+                )
+                self.parsing_completed.emit(result)
+                self.error_occurred.emit(error_msg, self.file_path)
+                
+        except Exception as e:
+            processing_time = time.time() - start_time
+            error_msg = f"Exception during parsing: {str(e)}"
+            
+            result = ParseResult(
+                success=False,
+                error=error_msg,
+                file_path=self.file_path,
+                processing_time=processing_time
+            )
+            self.parsing_completed.emit(result)
+            self.error_occurred.emit(error_msg, self.file_path)
+    
+    def stop_parsing(self):
+        """Signal the worker to stop"""
+        with QMutexLocker(self._mutex):
+            self.should_stop = True
+
+class ConversionWorker(QObject):
+    """Worker for file conversion operations"""
+    
+    # Signals
+    progress_updated = pyqtSignal(ProgressUpdate)
+    conversion_completed = pyqtSignal(dict)  # conversion result
+    
+    def __init__(self, processor, workspace_path: str):
+        super().__init__()
+        self.processor = processor
+        self.workspace_path = workspace_path
+        self.should_stop = False
+        self._mutex = QMutex()
+    
+    @pyqtSlot()
+    def prepare_workspace(self):
+        """Prepare workspace with conversions"""
+        try:
+            def progress_callback(percent, message):
+                with QMutexLocker(self._mutex):
+                    if self.should_stop:
+                        return
+                
+                self.progress_updated.emit(ProgressUpdate(
+                    current=percent, total=100,
+                    message=message,
+                    stage="conversion"
+                ))
+            
+            result = self.processor.prepare_workspace_for_packing(
+                self.workspace_path, 
+                progress_callback
+            )
+            
+            self.conversion_completed.emit(result)
+            
+        except Exception as e:
+            self.conversion_completed.emit({
+                'temp_path': self.workspace_path,
+                'conversions': [],
+                'errors': [f"Conversion failed: {str(e)}"],
+                'cleanup_needed': False
+            })
+    
+    def stop_conversion(self):
+        """Signal worker to stop"""
+        with QMutexLocker(self._mutex):
+            self.should_stop = True
 
 class UniversalBG3Parser:
-    """Universal parser for LSX, LSJ, and LSF files"""
+    """Universal parser for LSX, LSJ, and LSF files with threading support"""
     
     def __init__(self):
         self.current_file = None
         self.parsed_data = None
         self.file_format = None
+        self.wine_wrapper = None
+        self._parsing_mutex = QMutex()
     
     def detect_file_format(self, file_path):
         """Detect file format based on extension and content"""
@@ -63,21 +251,22 @@ class UniversalBG3Parser:
         return 'unknown'
     
     def parse_file(self, file_path):
-        """Parse any supported BG3 file format"""
-        self.current_file = file_path
-        self.file_format = self.detect_file_format(file_path)
-        
-        if self.file_format == 'lsx':
-            return self.parse_lsx_file(file_path)
-        elif self.file_format == 'lsj':
-            return self.parse_lsj_file(file_path)
-        elif self.file_format == 'lsf':
-            return self.parse_lsf_file(file_path)
-        elif self.file_format == 'loca':  # Add this
-            return self.parse_loca_file(file_path)
-        else:
-            print(f"❌ Unsupported file format: {file_path}")
-            return None
+        """Parse any supported BG3 file format (thread-safe)"""
+        with QMutexLocker(self._parsing_mutex):
+            self.current_file = file_path
+            self.file_format = self.detect_file_format(file_path)
+            
+            if self.file_format == 'lsx':
+                return self.parse_lsx_file(file_path)
+            elif self.file_format == 'lsj':
+                return self.parse_lsj_file(file_path)
+            elif self.file_format == 'lsf':
+                return self.parse_lsf_file(file_path)
+            elif self.file_format == 'loca':
+                return self.parse_loca_file(file_path)
+            else:
+                logger.warning(f"Unsupported file format: {file_path}")
+                return f"Unsupported file format: {file_path}"
 
     def parse_loca_file(self, file_path):
         """Parse .loca files by converting to XML first"""
@@ -85,10 +274,10 @@ class UniversalBG3Parser:
             # Convert .loca to XML using divine.exe
             temp_xml = file_path + '.temp.xml'
             
-            if not self.bg3_tool:
+            if not self.wine_wrapper:
                 return "Error: No BG3 tool available for .loca conversion"
             
-            success = self.bg3_tool.convert_loca_to_xml(file_path, temp_xml)
+            success = self.wine_wrapper.convert_loca_to_xml(file_path, temp_xml)
             
             if success and os.path.exists(temp_xml):
                 # Parse the converted XML
@@ -125,14 +314,14 @@ class UniversalBG3Parser:
                 except:
                     pass
                 
-                print(f"Parsed .loca file: {file_path} ({len(entries)} strings)")
+                logger.info(f"Parsed .loca file: {file_path} ({len(entries)} strings)")
                 return self.parsed_data
                 
             else:
                 return f"Failed to convert .loca file: {file_path}"
                 
         except Exception as e:
-            print(f"Error parsing .loca: {e}")
+            logger.error(f"Error parsing .loca: {e}")
             return f"Error parsing .loca: {e}"
     
     def parse_lsx_file(self, file_path):
@@ -185,15 +374,17 @@ class UniversalBG3Parser:
             if schema_info:
                 self.parsed_data['schema_info'] = schema_info
             
-            print(f"✅ Parsed LSX file: {file_path}")
+            logger.info(f"Parsed LSX file: {file_path}")
             return self.parsed_data
             
         except ET.ParseError as e:
-            print(f"❌ XML Parse Error: {e}")
-            return f"XML Parse Error: {e}"
+            error_msg = f"XML Parse Error: {e}"
+            logger.error(error_msg)
+            return error_msg
         except Exception as e:
-            print(f"❌ Error parsing LSX: {e}")
-            return f"Error parsing LSX: {e}"
+            error_msg = f"Error parsing LSX: {e}"
+            logger.error(error_msg)
+            return error_msg
     
     def get_lsx_schema_info(self, lsx_file=None):
         """Analyze LSX structure and data types"""
@@ -306,15 +497,17 @@ class UniversalBG3Parser:
                             region_info = self._parse_json_region(region_data)
                             self.parsed_data['regions'].append(region_info)
             
-            print(f"✅ Parsed LSJ file: {file_path}")
+            logger.info(f"Parsed LSJ file: {file_path}")
             return self.parsed_data
             
         except json.JSONDecodeError as e:
-            print(f"❌ JSON Parse Error: {e}")
-            return f"JSON Parse Error: {e}"
+            error_msg = f"JSON Parse Error: {e}"
+            logger.error(error_msg)
+            return error_msg
         except Exception as e:
-            print(f"❌ Error parsing LSJ: {e}")
-            return f"Error parsing LSJ: {e}"
+            error_msg = f"Error parsing LSJ: {e}"
+            logger.error(error_msg)
+            return error_msg
 
     def _parse_json_region_dict(self, region_name, region_data):
         """Parse JSON region data when regions is a dictionary"""
@@ -340,8 +533,6 @@ class UniversalBG3Parser:
         """Parse LSF (binary) files - requires divine.exe conversion"""
         try:
             # For LSF files, we need to convert to LSX first using divine.exe
-            # This is a placeholder - you'll need to integrate with your divine wrapper
-            
             temp_lsx = file_path + '.temp.lsx'
             
             # Use your existing divine wrapper to convert LSF to LSX
@@ -360,39 +551,41 @@ class UniversalBG3Parser:
                 except:
                     pass
                 
-                print(f"✅ Parsed LSF file: {file_path}")
+                logger.info(f"Parsed LSF file: {file_path}")
                 return result
             else:
-                print(f"❌ Failed to convert LSF file: {file_path}")
-                return None
+                error_msg = f"Failed to convert LSF file: {file_path}"
+                logger.error(error_msg)
+                return error_msg
                 
         except Exception as e:
-            print(f"❌ Error parsing LSF: {e}")
-            return None
+            error_msg = f"Error parsing LSF: {e}"
+            logger.error(error_msg)
+            return error_msg
     
-    def set_bg3_tool(self, bg3_tool):
+    def set_wine_wrapper(self, wine_wrapper):
         """Set the BG3 tool instance for LSF conversion"""
-        self.bg3_tool = bg3_tool
+        self.wine_wrapper = wine_wrapper
     
     def _convert_lsf_to_lsx(self, lsf_path, lsx_path):
         """Convert LSF to LSX using divine.exe via WineWrapper"""
-        if not self.bg3_tool:
-            print("No BG3 tool available for LSF conversion")
+        if not self.wine_wrapper:
+            logger.error("No BG3 tool available for LSF conversion")
             return False
         
         try:
             # Use the WineWrapper's convert method
-            success = self.bg3_tool.convert_lsf_to_lsx(lsf_path, lsx_path)
+            success = self.wine_wrapper.convert_lsf_to_lsx(lsf_path, lsx_path)
             
             if success and os.path.exists(lsx_path):
-                print(f"Successfully converted LSF to LSX: {lsx_path}")
+                logger.info(f"Successfully converted LSF to LSX: {lsx_path}")
                 return True
             else:
-                print(f"LSF conversion failed or output file not found")
+                logger.error("LSF conversion failed or output file not found")
                 return False
                 
         except Exception as e:
-            print(f"Error in LSF conversion: {e}")
+            logger.error(f"Error in LSF conversion: {e}")
             return False
     
     def _parse_region(self, region_element):
@@ -459,24 +652,17 @@ class UniversalBG3Parser:
                 region_info['nodes'].append(node_info)
         
         return region_info
-        
+
 class AutoConversionProcessor:
-    """Handles automatic file conversions during mod workspace preparation"""
+    """Handles automatic file conversions with threading support"""
     
     def __init__(self, wine_wrapper):
         self.wine_wrapper = wine_wrapper
         self.conversion_log = []
+        self._processing_mutex = QMutex()
     
     def find_conversion_files(self, workspace_path):
-        """
-        Find files that need conversion in workspace
-        
-        Args:
-            workspace_path: Path to mod workspace
-            
-        Returns:
-            dict: Files organized by conversion type
-        """
+        """Find files that need conversion in workspace"""
         conversion_files = {
             'lsf_conversions': [],  # .lsf.lsx -> .lsf
             'lsb_conversions': [],  # .lsb.lsx -> .lsb
@@ -516,122 +702,105 @@ class AutoConversionProcessor:
                         })
         
         except Exception as e:
-            print(f"Error scanning workspace: {e}")
+            logger.error(f"Error scanning workspace: {e}")
         
         return conversion_files
     
     def prepare_workspace_for_packing(self, workspace_path, progress_callback=None):
-        """
-        Prepare workspace by converting files and creating temp copy
-        
-        Args:
-            workspace_path: Original workspace path
-            progress_callback: Optional progress callback
+        """Prepare workspace by converting files and creating temp copy (thread-safe)"""
+        with QMutexLocker(self._processing_mutex):
+            conversion_files = self.find_conversion_files(workspace_path)
+            total_conversions = sum(len(files) for files in conversion_files.values())
             
-        Returns:
-            dict: Results with temp_path, conversions, and errors
-        """
-        conversion_files = self.find_conversion_files(workspace_path)
-        total_conversions = sum(len(files) for files in conversion_files.values())
-        
-        if total_conversions == 0:
-            return {
-                'temp_path': workspace_path,
-                'conversions': [],
-                'errors': [],
-                'cleanup_needed': False
-            }
-        
-        if progress_callback:
-            progress_callback(5, f"Found {total_conversions} files to convert")
-        
-        # Create temporary workspace
-        temp_workspace = tempfile.mkdtemp(prefix="bg3_workspace_")
-        
-        try:
-            if progress_callback:
-                progress_callback(10, "Copying workspace to temporary location...")
-            
-            # Copy entire workspace to temp
-            shutil.copytree(workspace_path, os.path.join(temp_workspace, "workspace"))
-            temp_workspace_path = os.path.join(temp_workspace, "workspace")
+            if total_conversions == 0:
+                return {
+                    'temp_path': workspace_path,
+                    'conversions': [],
+                    'errors': [],
+                    'cleanup_needed': False
+                }
             
             if progress_callback:
-                progress_callback(30, "Starting file conversions...")
+                progress_callback(5, f"Found {total_conversions} files to convert")
             
-            conversions = []
-            errors = []
-            processed = 0
+            # Create temporary workspace
+            temp_workspace = tempfile.mkdtemp(prefix="bg3_workspace_")
             
-            # Process each conversion type
-            for conversion_type, files in conversion_files.items():
-                for file_info in files:
-                    try:
-                        # Convert the file in temp workspace
-                        temp_source = os.path.join(temp_workspace_path, file_info['relative_path'])
-                        result = self.convert_file(temp_source, file_info['target_ext'])
-                        
-                        conversions.append({
-                            'original_path': file_info['source'],
-                            'temp_path': temp_source,
-                            'target_path': result.get('target_path'),
-                            'conversion_type': conversion_type,
-                            'success': result['success']
-                        })
-                        
-                        if not result['success']:
-                            errors.append(result['error'])
-                        
-                    except Exception as e:
-                        errors.append(f"Error converting {file_info['relative_path']}: {e}")
-                    
-                    processed += 1
-                    if progress_callback:
-                        percent = 30 + int((processed / total_conversions) * 60)
-                        progress_callback(percent, f"Converted {processed}/{total_conversions} files")
-            
-            if progress_callback:
-                progress_callback(95, "Finalizing prepared workspace...")
-            
-            result = {
-                'temp_path': temp_workspace_path,
-                'conversions': conversions,
-                'errors': errors,
-                'cleanup_needed': True,
-                'temp_root': temp_workspace
-            }
-            
-            if progress_callback:
-                success_count = sum(1 for c in conversions if c['success'])
-                progress_callback(100, f"Converted {success_count}/{total_conversions} files successfully")
-            
-            return result
-            
-        except Exception as e:
-            # Clean up on error
             try:
-                shutil.rmtree(temp_workspace)
-            except:
-                pass
-            
-            return {
-                'temp_path': workspace_path,
-                'conversions': [],
-                'errors': [f"Workspace preparation failed: {e}"],
-                'cleanup_needed': False
-            }
+                if progress_callback:
+                    progress_callback(10, "Copying workspace to temporary location...")
+                
+                # Copy entire workspace to temp
+                shutil.copytree(workspace_path, os.path.join(temp_workspace, "workspace"))
+                temp_workspace_path = os.path.join(temp_workspace, "workspace")
+                
+                if progress_callback:
+                    progress_callback(30, "Starting file conversions...")
+                
+                conversions = []
+                errors = []
+                processed = 0
+                
+                # Process each conversion type
+                for conversion_type, files in conversion_files.items():
+                    for file_info in files:
+                        try:
+                            # Convert the file in temp workspace
+                            temp_source = os.path.join(temp_workspace_path, file_info['relative_path'])
+                            result = self.convert_file(temp_source, file_info['target_ext'])
+                            
+                            conversions.append({
+                                'original_path': file_info['source'],
+                                'temp_path': temp_source,
+                                'target_path': result.get('target_path'),
+                                'conversion_type': conversion_type,
+                                'success': result['success']
+                            })
+                            
+                            if not result['success']:
+                                errors.append(result['error'])
+                            
+                        except Exception as e:
+                            errors.append(f"Error converting {file_info['relative_path']}: {e}")
+                        
+                        processed += 1
+                        if progress_callback:
+                            percent = 30 + int((processed / total_conversions) * 60)
+                            progress_callback(percent, f"Converted {processed}/{total_conversions} files")
+                
+                if progress_callback:
+                    progress_callback(95, "Finalizing prepared workspace...")
+                
+                result = {
+                    'temp_path': temp_workspace_path,
+                    'conversions': conversions,
+                    'errors': errors,
+                    'cleanup_needed': True,
+                    'temp_root': temp_workspace
+                }
+                
+                if progress_callback:
+                    success_count = sum(1 for c in conversions if c['success'])
+                    progress_callback(100, f"Converted {success_count}/{total_conversions} files successfully")
+                
+                return result
+                
+            except Exception as e:
+                # Clean up on error
+                try:
+                    shutil.rmtree(temp_workspace)
+                except:
+                    pass
+                
+                return {
+                    'temp_path': workspace_path,
+                    'conversions': [],
+                    'errors': [f"Workspace preparation failed: {e}"],
+                    'cleanup_needed': False
+                }
     
     def convert_file(self, source_file, target_ext):
-        """
-        Convert a single file to target format
-        
-        Args:
-            source_file: Source .lsx file
-            target_ext: Target extension (.lsf, .lsb, etc.)
-            
-        Returns:
-            dict: Conversion result
-        """
+        """Convert a single file to target format"""
         try:
             # Generate target filename
             source_path = Path(source_file)
@@ -687,80 +856,6 @@ class AutoConversionProcessor:
                 shutil.rmtree(temp_root)
                 return True
         except Exception as e:
-            print(f"Warning: Could not clean up temp workspace: {e}")
+            logger.warning(f"Could not clean up temp workspace: {e}")
             return False
         return True
-
-class AutoConversionDialog:
-    """Dialog for showing conversion progress and results"""
-    
-    @staticmethod
-    def show_conversion_preview(parent, conversion_files):
-        """Show preview of files that will be converted"""
-        from PyQt6.QtWidgets import (
-            QDialog, QVBoxLayout, QLabel, QTreeWidget, QTreeWidgetItem,
-            QPushButton, QHBoxLayout, QTextEdit
-        )
-        
-        dialog = QDialog(parent)
-        dialog.setWindowTitle("Auto-Conversion Preview")
-        dialog.setModal(True)
-        dialog.resize(600, 400)
-        
-        layout = QVBoxLayout(dialog)
-        
-        # Info
-        total_files = sum(len(files) for files in conversion_files.values())
-        info_label = QLabel(f"Found {total_files} files that will be automatically converted:")
-        layout.addWidget(info_label)
-        
-        # File tree
-        tree = QTreeWidget()
-        tree.setHeaderLabels(['File', 'Conversion', 'Location'])
-        
-        for conversion_type, files in conversion_files.items():
-            if not files:
-                continue
-                
-            # Create category item
-            category_item = QTreeWidgetItem(tree)
-            category_item.setText(0, conversion_type.replace('_', ' ').title())
-            category_item.setText(1, f"{len(files)} files")
-            
-            for file_info in files:
-                file_item = QTreeWidgetItem(category_item)
-                file_name = os.path.basename(file_info['source'])
-                file_item.setText(0, file_name)
-                file_item.setText(1, f"→ {file_info['target_ext']}")
-                file_item.setText(2, file_info['relative_path'])
-        
-        tree.expandAll()
-        layout.addWidget(tree)
-        
-        # Info text
-        info_text = QTextEdit()
-        info_text.setMaximumHeight(100)
-        info_text.setPlainText(
-            "These files will be converted during PAK creation:\n"
-            "• .lsf.lsx files will become .lsf files\n"
-            "• .lsb.lsx files will become .lsb files\n"
-            "• Original .lsx files will be preserved in your workspace"
-        )
-        layout.addWidget(info_text)
-        
-        # Buttons
-        button_layout = QHBoxLayout()
-        button_layout.addStretch()
-        
-        cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(dialog.reject)
-        button_layout.addWidget(cancel_btn)
-        
-        proceed_btn = QPushButton("Proceed with Conversion")
-        proceed_btn.clicked.connect(dialog.accept)
-        proceed_btn.setDefault(True)
-        button_layout.addWidget(proceed_btn)
-        
-        layout.addLayout(button_layout)
-        
-        return dialog.exec() == QDialog.DialogCode.Accepted

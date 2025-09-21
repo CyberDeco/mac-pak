@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Entry point for BG3 Toolkit.
+Entry point for MacPak.
 """
 
 import sys
@@ -12,7 +12,7 @@ import PyQt6.QtCore
 
 def main():
     """Main application entry point"""
-    print("Launching BG3 Mac Modding Toolkit (PyQt6)...")
+    print("Launching MacPak (PyQt6)...")
     
     # Check Python version
     if sys.version_info < (3, 8):
@@ -29,7 +29,6 @@ def main():
     
     # Set up environment for Mac
     if sys.platform == "darwin":
-        # Set Mac-specific environment variables
         os.environ["QT_MAC_WANTS_LAYER"] = "1"
     
     # Import and run the application
@@ -38,15 +37,33 @@ def main():
         app = QApplication(sys.argv)
         
         # Set application properties for Mac
-        app.setApplicationName("BG3 Mac Modding Toolkit")
+        app.setApplicationName("MacPak")
         app.setApplicationVersion("0.0")
-        app.setOrganizationName("BG3ModToolkit")
-        app.setOrganizationDomain("bg3modtoolkit.app")
+        app.setOrganizationName("CyberDeco")
+        app.setOrganizationDomain("MacPak.app")
 
         # Use native Mac file dialogs
         app.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, False)
+
+        # Fix stylesheet path for both development and bundled app
+        if getattr(sys, 'frozen', False):
+            # Running in PyInstaller bundle
+            base_path = Path(sys._MEIPASS)
+        else:
+            # Running in development
+            base_path = Path(__file__).parent
         
-        # Import the main window class (using relative import since this is in the package)
+        style_path = base_path / "mac_pak" / "resources" / "styles" / "main.qss"
+        
+        # Load stylesheet if it exists
+        if style_path.exists():
+            with open(style_path, 'r') as f:
+                qss = f.read()
+            app.setStyleSheet(qss)
+        else:
+            print(f"Warning: Stylesheet not found at {style_path}")
+        
+        # Import the main window class
         from .ui.main_window import BG3ModToolkitMainWindow
         
         # Create and show main window

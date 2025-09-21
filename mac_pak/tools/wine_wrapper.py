@@ -1,248 +1,39 @@
 #!/usr/bin/env python3
 """
-Wine Integration for BG3 Mac Tool
-Error handling, process monitoring, and Wine environment management
+Wine Integration for BG3 Mac Tool - App Bundle Compatible Version
+Main wrapper class using the wine environment manager
 """
 
 import subprocess
 import os
-
+import sys
+import shutil
 import threading
-import queue
-import time
-
+import tempfile
 from pathlib import Path
 
+from .wine_environment import WineEnvironmentManager, WineProcessMonitor
 from ..data.parsers.larian_parser import *
 
-class WineProcessMonitor:
-    """Monitor Wine processes with real-time output and cancellation support"""
-    
-    def __init__(self):
-        self.process = None
-        self.output_queue = queue.Queue()
-        self.error_queue = queue.Queue()
-        self.cancelled = False
-        self.progress_callback = None
-    
-    def run_process(self, cmd, env=None, progress_callback=None):
-        """Run a process with real-time monitoring"""
-        self.progress_callback = progress_callback
-        self.cancelled = False
-        
-        try:
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                bufsize=1,
-                universal_newlines=True
-            )
-            
-            # Start output monitoring threads
-            stdout_thread = threading.Thread(
-                target=self._monitor_output,
-                args=(self.process.stdout, self.output_queue, "stdout")
-            )
-            stderr_thread = threading.Thread(
-                target=self._monitor_output,
-                args=(self.process.stderr, self.error_queue, "stderr")
-            )
-            
-            stdout_thread.daemon = True
-            stderr_thread.daemon = True
-            stdout_thread.start()
-            stderr_thread.start()
-            
-            # Monitor progress and handle cancellation
-            return self._monitor_process()
-            
-        except Exception as e:
-            return False, f"Failed to start process: {e}"
-    
-    def _monitor_output(self, pipe, output_queue, stream_type):
-        """Monitor stdout/stderr in separate thread"""
-        try:
-            for line in iter(pipe.readline, ''):
-                if line:
-                    output_queue.put((stream_type, line.strip()))
-        except:
-            pass
-        finally:
-            pipe.close()
-    
-    def _monitor_process(self):
-        """Monitor the main process and collect output"""
-        stdout_lines = []
-        stderr_lines = []
-        
-        while self.process.poll() is None:
-            if self.cancelled:
-                self._terminate_process()
-                return False, "Operation cancelled by user"
-            
-            # Collect any new output
-            while not self.output_queue.empty():
-                try:
-                    stream_type, line = self.output_queue.get_nowait()
-                    if stream_type == "stdout":
-                        stdout_lines.append(line)
-                        # Parse progress from Divine.exe output if possible
-                        self._parse_progress(line)
-                    else:
-                        stderr_lines.append(line)
-                except queue.Empty:
-                    break
-            
-            time.sleep(0.1)  # Don't overwhelm the CPU
-        
-        # Collect any remaining output
-        while not self.output_queue.empty():
-            try:
-                stream_type, line = self.output_queue.get_nowait()
-                if stream_type == "stdout":
-                    stdout_lines.append(line)
-                else:
-                    stderr_lines.append(line)
-            except queue.Empty:
-                break
-        
-        # Check final result
-        return_code = self.process.returncode
-        stdout_text = '\n'.join(stdout_lines)
-        stderr_text = '\n'.join(stderr_lines)
-        
-        if return_code == 0:
-            return True, stdout_text
-        else:
-            error_msg = stderr_text if stderr_text else "Unknown error"
-            return False, error_msg
-    
-    def _parse_progress(self, line):
-        """Parse progress information from Divine.exe output"""
-        if self.progress_callback:
-            # Divine.exe doesn't provide detailed progress, but we can infer some
-            line_lower = line.lower()
-            if "extracting" in line_lower:
-                self.progress_callback(30, "Extracting files...")
-            elif "creating" in line_lower:
-                self.progress_callback(40, "Creating archive...")
-            elif "processing" in line_lower:
-                self.progress_callback(50, "Processing files...")
-            elif "completed" in line_lower or "success" in line_lower:
-                self.progress_callback(90, "Nearly complete...")
-    
-    def _terminate_process(self):
-        """Safely terminate the Wine process"""
-        if self.process:
-            try:
-                # Try graceful termination first
-                self.process.terminate()
-                
-                # Wait a bit for graceful shutdown
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    # Force kill if needed
-                    self.process.kill()
-                    self.process.wait()
-            except:
-                pass
-    
-    def cancel(self):
-        """Cancel the running operation"""
-        self.cancelled = True
-
-class WineEnvironmentManager:
-    """Manage Wine environment and validate setup"""
-    
-    def __init__(self, wine_path=None, wine_prefix=None):
-        self.wine_path = wine_path
-        self.wine_prefix = wine_prefix or os.path.expanduser("~/.wine")
-        self._wine_info = None
-    
-    def validate_wine_installation(self):
-        """Validate that Wine is properly installed and functional"""
-        if not self.wine_path:
-            self.wine_path = self._find_wine_executable()
-        
-        if not self.wine_path:
-            return False, "Wine executable not found"
-        
-        # Test Wine functionality
-        try:
-            result = subprocess.run(
-                [self.wine_path, "--version"],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            
-            if result.returncode != 0:
-                return False, f"Wine test failed: {result.stderr}"
-            
-            wine_version = result.stdout.strip()
-            self._wine_info = {"version": wine_version}
-            
-            return True, f"Wine validation successful: {wine_version}"
-            
-        except subprocess.TimeoutExpired:
-            return False, "Wine test timed out"
-        except Exception as e:
-            return False, f"Wine validation error: {e}"
-    
-    def _find_wine_executable(self):
-        """Find Wine executable on the system"""
-        possible_paths = [
-            "/usr/local/bin/wine",
-            "/opt/homebrew/bin/wine",
-            "/opt/local/bin/wine",  # MacPorts
-            "/Applications/Wine.app/Contents/Resources/wine/bin/wine",
-            "/Applications/Wineskin.app/Contents/Resources/wine/bin/wine"
-        ]
-        
-        # Check PATH first
-        try:
-            result = subprocess.run(["which", "wine"], capture_output=True, text=True)
-            if result.returncode == 0:
-                return result.stdout.strip()
-        except:
-            pass
-        
-        # Check specific paths
-        for path in possible_paths:
-            if os.path.isfile(path) and os.access(path, os.X_OK):
-                return path
-        
-        return None
-    
-    def validate_wine_prefix(self):
-        """Validate and optionally create Wine prefix"""
-        if not os.path.exists(self.wine_prefix):
-            return False, f"Wine prefix not found: {self.wine_prefix}"
-        
-        # Check for essential Wine directories
-        essential_dirs = ["dosdevices", "drive_c"]
-        for dir_name in essential_dirs:
-            dir_path = os.path.join(self.wine_prefix, dir_name)
-            if not os.path.exists(dir_path):
-                return False, f"Wine prefix missing {dir_name} directory"
-        
-        return True, "Wine prefix validation successful"
-    
-    def get_wine_info(self):
-        """Get information about the Wine installation"""
-        if not self._wine_info:
-            self.validate_wine_installation()
-        return self._wine_info
-
 class WineWrapper:
-    """ BG3 Mac tool with Wine integration"""
+    """BG3 Mac tool with Wine integration - App Bundle Compatible"""
     
-    def __init__(self, wine_path=None, lslib_path=None, wine_prefix=None):
-        self.wine_env = WineEnvironmentManager(wine_path, wine_prefix)
+    def __init__(self, wine_path=None, lslib_path=None, wine_prefix=None, settings_manager=None):
+        # Import settings manager if not provided
+        if settings_manager is None:
+            try:
+                from ..core.settings import SettingsManager
+                self.settings_manager = SettingsManager()
+            except ImportError:
+                self.settings_manager = None
+        else:
+            self.settings_manager = settings_manager
+        
+        # Get divine path from settings if not provided
+        if not lslib_path and self.settings_manager:
+            lslib_path = self.settings_manager.get("divine_path")
+        
+        self.wine_env = WineEnvironmentManager(wine_path, wine_prefix, self.settings_manager)
         self.lslib_path = lslib_path
         self.current_monitor = None
         
@@ -256,21 +47,21 @@ class WineWrapper:
         if not wine_valid:
             raise RuntimeError(f"Wine validation failed: {wine_msg}")
         
-        # Validate Wine prefix
+        # Validate Wine prefix (create if needed in app bundle)
         prefix_valid, prefix_msg = self.wine_env.validate_wine_prefix()
         if not prefix_valid:
             print(f"Warning: {prefix_msg}")
+            # Try to initialize prefix
+            self.wine_env.initialize_wine_prefix()
         
         # Validate lslib path
-        if not self.lslib_path:
-            raise ValueError("Divine.exe path must be specified")
-        
-        if not os.path.exists(self.lslib_path.replace("Z:", "")):
-            raise FileNotFoundError(f"Divine.exe not found: {self.lslib_path}")
+        if self.lslib_path and not os.path.exists(self.lslib_path.replace("Z:", "")):
+            print(f"Warning: Divine.exe not found: {self.lslib_path}")
         
         print(f"Setup validation successful")
         print(f"Wine: {self.wine_env.wine_path}")
-        print(f"Divine.exe: {self.lslib_path}")
+        if self.lslib_path:
+            print(f"Divine.exe: {self.lslib_path}")
     
     def run_divine_command(self, action, source=None, destination=None, progress_callback=None, **kwargs):
         """Run Divine.exe command with monitoring"""
@@ -398,8 +189,9 @@ class WineWrapper:
             "wine_path": self.wine_env.wine_path,
             "wine_prefix": self.wine_env.wine_prefix,
             "lslib_path": self.lslib_path,
-            "python_version": f"{os.sys.version_info.major}.{os.sys.version_info.minor}.{os.sys.version_info.micro}",
-            "platform": os.sys.platform
+            "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
+            "platform": sys.platform,
+            "is_bundled": getattr(sys, 'frozen', False)
         }
         return info
 
@@ -444,13 +236,13 @@ class WineWrapper:
                 if progress_callback:
                     progress_callback(20, "Reading PAK structure...")
                 
-                # Use WineWrapper's list method
-                files = self.wine_wrapper.list_pak_contents(pak_file)
+                # Use this wrapper's list method
+                files = self.list_pak_contents(pak_file)
                 
                 if progress_callback:
                     progress_callback(80, f"Found {len(files)} files...")
                 
-                # Format file information - FIX THE PARSING HERE
+                # Format file information
                 formatted_files = []
                 for file_info in files:
                     if isinstance(file_info, dict):
@@ -475,7 +267,7 @@ class WineWrapper:
                             
                             if path_parts:
                                 file_path = ' '.join(path_parts)
-                                files.append({
+                                formatted_files.append({
                                     'name': file_path,  # Clean file path only
                                     'type': os.path.splitext(file_path)[1].lower() if '.' in file_path else 'folder'
                                 })
@@ -607,45 +399,87 @@ class WineWrapper:
         
         return validation
     
-    def convert_lsx_to_lsf(self, lsx_file, lsf_file):
-        """Convert LSX file to LSF format using divine.exe"""
-        wine_lsx_path = self.mac_to_wine_path(lsx_file)
-        wine_lsf_path = self.mac_to_wine_path(lsf_file)
-        
-        success, output = self.run_divine_command(
-            action="convert-resource",
-            source=wine_lsx_path,
-            destination=wine_lsf_path,
-            input_format="lsx",
-            output_format="lsf"
-        )
-        
-        if success and os.path.exists(lsf_file):
-            print(f"Successfully converted {lsx_file} to {lsf_file}")
-            return True
+    def convert_lsx_to_lsf(self, source, lsf_file, is_content=False):
+        """Convert LSX file or content to LSF format using divine.exe"""
+        if is_content:
+            # Create temporary file from content
+            temp_fd, temp_lsx_file = tempfile.mkstemp(suffix=".lsx")
+            try:
+                with os.fdopen(temp_fd, 'w') as f:
+                    f.write(source)
+                source_file = temp_lsx_file
+            except Exception as e:
+                os.close(temp_fd)
+                return False
         else:
-            print(f"Failed to convert {lsx_file}: {output}")
-            return False
+            source_file = source
+        
+        try:
+            wine_lsx_path = self.mac_to_wine_path(source_file)
+            wine_lsf_path = self.mac_to_wine_path(lsf_file)
+            
+            success, output = self.run_divine_command(
+                action="convert-resource",
+                source=wine_lsx_path,
+                destination=wine_lsf_path,
+                input_format="lsx",
+                output_format="lsf"
+            )
+            
+            if success and os.path.exists(lsf_file):
+                print(f"Successfully converted to {lsf_file}")
+                return True
+            else:
+                print(f"Failed to convert: {output}")
+                return False
+        finally:
+            # Clean up temporary file if created
+            if is_content and 'temp_lsx_file' in locals():
+                try:
+                    os.remove(temp_lsx_file)
+                except:
+                    pass
     
-    def convert_lsf_to_lsx(self, lsf_file, lsx_file):
-        """Convert LSF file to LSX format using divine.exe"""
-        wine_lsf_path = self.mac_to_wine_path(lsf_file)
-        wine_lsx_path = self.mac_to_wine_path(lsx_file)
-        
-        success, output = self.run_divine_command(
-            action="convert-resource",
-            source=wine_lsf_path,
-            destination=wine_lsx_path,
-            input_format="lsf",
-            output_format="lsx"
-        )
-        
-        if success and os.path.exists(lsx_file):
-            print(f"Successfully converted {lsf_file} to {lsx_file}")
-            return True
+    def convert_lsf_to_lsx(self, source, lsx_file, is_content=False):
+        """Convert LSF file or content to LSX format using divine.exe"""
+        if is_content:
+            # Create temporary file from content
+            temp_fd, temp_lsf_file = tempfile.mkstemp(suffix=".lsf")
+            try:
+                with os.fdopen(temp_fd, 'wb') as f:
+                    f.write(source if isinstance(source, bytes) else source.encode('utf-8'))
+                source_file = temp_lsf_file
+            except Exception as e:
+                os.close(temp_fd)
+                return False
         else:
-            print(f"Failed to convert {lsf_file}: {output}")
-            return False
+            source_file = source
+        
+        try:
+            wine_lsf_path = self.mac_to_wine_path(source_file)
+            wine_lsx_path = self.mac_to_wine_path(lsx_file)
+            
+            success, output = self.run_divine_command(
+                action="convert-resource",
+                source=wine_lsf_path,
+                destination=wine_lsx_path,
+                input_format="lsf",
+                output_format="lsx"
+            )
+            
+            if success and os.path.exists(lsx_file):
+                print(f"Successfully converted to {lsx_file}")
+                return True
+            else:
+                print(f"Failed to convert: {output}")
+                return False
+        finally:
+            # Clean up temporary file if created
+            if is_content and 'temp_lsf_file' in locals():
+                try:
+                    os.remove(temp_lsf_file)
+                except:
+                    pass
 
     def analyze_loca_file_binary(self, loca_path):
         """Analyze .loca file structure without conversion"""
@@ -727,3 +561,49 @@ class WineWrapper:
             return loca_files
         
         return []
+
+
+# Backward compatibility functions and global instance
+wine_wrapper = None
+
+def get_wine_wrapper(settings_manager=None):
+    """Get or create the global wine wrapper instance"""
+    global wine_wrapper
+    if wine_wrapper is None:
+        try:
+            wine_wrapper = WineWrapper(settings_manager=settings_manager)
+        except Exception as e:
+            print(f"Warning: Failed to initialize Wine wrapper: {e}")
+            wine_wrapper = None
+    return wine_wrapper
+
+def is_wine_available(settings_manager=None):
+    """Check if Wine is available"""
+    wrapper = get_wine_wrapper(settings_manager)
+    return wrapper is not None and wrapper.wine_env.wine_path is not None
+
+def run_wine_command(command, timeout=None, settings_manager=None, **kwargs):
+    """Run a command through Wine"""
+    wrapper = get_wine_wrapper(settings_manager)
+    if not wrapper:
+        raise RuntimeError("Wine wrapper not available")
+    
+    # Use the wine_env directly for simple commands
+    wine_cmd = [wrapper.wine_env.wine_path] + command
+    env = os.environ.copy()
+    env["WINEPREFIX"] = wrapper.wine_env.wine_prefix
+    
+    return subprocess.run(wine_cmd, env=env, timeout=timeout, **kwargs)
+
+def run_lslib_command(lslib_path, args, timeout=300, settings_manager=None):
+    """Run LSLib through Wine"""
+    wrapper = get_wine_wrapper(settings_manager)
+    if not wrapper:
+        raise RuntimeError("Wine wrapper not available")
+    
+    # Simple wrapper for backward compatibility
+    wine_cmd = [wrapper.wine_env.wine_path, lslib_path] + args
+    env = os.environ.copy()
+    env["WINEPREFIX"] = wrapper.wine_env.wine_prefix
+    
+    return subprocess.run(wine_cmd, env=env, timeout=timeout, capture_output=True, text=True)

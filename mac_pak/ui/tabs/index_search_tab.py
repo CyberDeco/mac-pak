@@ -15,7 +15,7 @@ from ..threads.indexing_thread import IndexingThread
 class IndexSearchTab(QWidget):
     """Widget for searching indexed files"""
     
-    def __init__(self, parent=None, wine_wrapper=None, settings_manager=None):
+    def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
         
         self.wine_wrapper = wine_wrapper

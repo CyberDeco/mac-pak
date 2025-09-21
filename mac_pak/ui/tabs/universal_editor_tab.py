@@ -10,10 +10,10 @@ from ..widgets.universal_editor.batch_processor import BatchProcessor
 class UniversalEditorTab(QWidget):
     """Combined LSX Editor and Batch Processor in a tabbed interface"""
     
-    def __init__(self, parent=None, settings_manager=None, bg3_tool=None):
+    def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
         self.settings_manager = settings_manager
-        self.bg3_tool = bg3_tool
+        self.wine_wrapper = wine_wrapper
         
         self.setup_ui()
     
@@ -37,7 +37,7 @@ class UniversalEditorTab(QWidget):
         self.editor = LSXEditor(
             parent=self,
             settings_manager=self.settings_manager,
-            bg3_tool=self.bg3_tool
+            wine_wrapper=self.wine_wrapper
         )
         self.tab_widget.addTab(self.editor, "File Editor")
         
@@ -45,34 +45,11 @@ class UniversalEditorTab(QWidget):
         self.batch_processor = BatchProcessor(
             parent=self,
             settings_manager=self.settings_manager,
-            bg3_tool=self.bg3_tool
+            wine_wrapper=self.wine_wrapper
         )
         self.tab_widget.addTab(self.batch_processor, "Batch Processing")
         
         layout.addWidget(self.tab_widget)
-
-
-    # def setup_ui(self):
-    #     """Setup Universal Editor tab with LSX/LSJ/LSF support"""
-    #     try:
-    #         # Import the new LSX editor
-    #         from lsx_editor import UniversalEditorTab
-
-    #         # Create the editor tab
-    #         editor_tab = UniversalEditorTab(
-    #             parent=self,
-    #             settings_manager=self.settings_manager,
-    #             bg3_tool=self.wine_wrapper
-    #         )
-            
-    #         self.tab_widget.addTab(editor_tab, "Universal Editor")
-            
-    #     except ImportError as e:
-    #         print(f"Could not import Universal Editor: {e}")
-    #         # Use the styled placeholder
-    #         placeholder = self.setup_universal_editor_placeholder()
-    #         self.tab_widget.addTab(placeholder, "Universal Editor")
-
 
        # Add a welcome message or recent files when no file is loaded
     def setup_universal_editor_placeholder(self):

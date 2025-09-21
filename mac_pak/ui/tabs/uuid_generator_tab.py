@@ -15,7 +15,7 @@ from ...data.generators.uuid_generator import UUIDGenerator, TranslatedStringGen
 class BG3IDGeneratorTab(QWidget):
     """Combined widget for UUID and handle generation"""
     
-    def __init__(self, parent=None, wine_wrapper=None, settings_manager=None):
+    def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
         
         self.uuid_generator = UUIDGenerator()

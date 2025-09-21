@@ -13,9 +13,9 @@ from ...threads.lsx_lsf_lsj_conversion import BatchConversionThread
 class BatchProcessor(QWidget):
     """Batch file processing interface"""
     
-    def __init__(self, parent=None, settings_manager=None, bg3_tool=None):
+    def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
-        self.bg3_tool = bg3_tool
+        self.wine_wrapper = wine_wrapper
         self.settings_manager = settings_manager
         self.file_list = []
         
@@ -128,9 +128,9 @@ class BatchProcessor(QWidget):
     def update_button_states(self):
         """Update button states based on current state"""
         has_files = len(self.file_list) > 0
-        has_bg3_tool = self.bg3_tool is not None
+        has_wine_wrapper = self.wine_wrapper is not None
         
-        self.convert_btn.setEnabled(has_files and has_bg3_tool)
+        self.convert_btn.setEnabled(has_files and has_wine_wrapper)
         self.remove_btn.setEnabled(has_files)
         self.clear_btn.setEnabled(has_files)
     
@@ -209,7 +209,7 @@ class BatchProcessor(QWidget):
             QMessageBox.warning(self, "Warning", "No files selected for conversion")
             return
         
-        if not self.bg3_tool:
+        if not self.wine_wrapper:
             QMessageBox.critical(self, "Error", "Batch conversion requires divine.exe integration")
             return
         
@@ -233,7 +233,7 @@ class BatchProcessor(QWidget):
         
         # Start conversion thread
         self.conversion_thread = BatchConversionThread(
-            self.bg3_tool, self.file_list, target_format, output_dir
+            self.wine_wrapper, self.file_list, target_format, output_dir
         )
         self.conversion_thread.progress_updated.connect(self.update_progress)
         self.conversion_thread.conversion_finished.connect(self.batch_conversion_finished)

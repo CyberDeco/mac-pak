@@ -1,6 +1,7 @@
 import os
 import json
 import xml.etree.ElementTree as ET
+import tempfile
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit, 
@@ -12,21 +13,27 @@ from PyQt6.QtGui import QFont
 from ....data.parsers.larian_parser import UniversalBG3Parser
 from ...threads.lsx_lsf_lsj_conversion import FileConversionThread
 from ...editors.syntax_highlighter import LSXSyntaxHighlighter
+from ...dialogs.progress_dialog import ProgressDialog
 
 class LSXEditor(QWidget):
     """Universal BG3 file editor supporting LSX, LSJ, and LSF formats"""
     
-    def __init__(self, parent=None, settings_manager=None, bg3_tool=None):
+    def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
         self.parser = UniversalBG3Parser()
-        self.bg3_tool = bg3_tool
+        self.wine_wrapper = wine_wrapper
+        self.settings_manager = settings_manager
         self.current_file = None
         self.current_format = None
         self.modified = False
-        self.settings_manager = settings_manager
+        self.original_file_for_conversion = None
+        self.converted_binary_file = None
         
-        if self.bg3_tool:
-            self.parser.set_bg3_tool(self.bg3_tool)
+        # Conversion state tracking
+        self.conversion_thread = None
+        
+        if self.wine_wrapper:
+            self.parser.set_wine_wrapper(self.wine_wrapper)
         
         self.setup_ui()
     
@@ -68,6 +75,12 @@ class LSXEditor(QWidget):
         self.convert_lsf_btn.clicked.connect(self.convert_to_lsf)
         toolbar_layout.addWidget(self.convert_lsf_btn)
         
+        # Cancel button (hidden by default)
+        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn.clicked.connect(self.cancel_conversion)
+        self.cancel_btn.setVisible(False)
+        toolbar_layout.addWidget(self.cancel_btn)
+        
         # Separator
         toolbar_layout.addWidget(self.create_separator())
         
@@ -97,12 +110,28 @@ class LSXEditor(QWidget):
         
         # Setup syntax highlighter
         self.highlighter = LSXSyntaxHighlighter(self.text_editor.document())
-        #self.highlighter = None
         
         layout.addWidget(self.text_editor)
         
         # Initially disable some buttons
         self.update_button_states()
+
+    def set_conversion_ui_state(self, enabled):
+        """Enable/disable UI during conversion with cancel button"""
+        # Disable conversion buttons and file operations during conversion
+        self.convert_lsx_btn.setEnabled(enabled)
+        self.convert_lsj_btn.setEnabled(enabled)
+        self.convert_lsf_btn.setEnabled(enabled)
+        self.open_btn.setEnabled(enabled)
+        self.save_btn.setEnabled(enabled and self.modified)
+        self.save_as_btn.setEnabled(enabled and (self.current_file or self.modified))
+        
+        # Show/hide cancel button
+        self.cancel_btn.setVisible(not enabled)
+        
+        if enabled:
+            # Restore normal button states
+            self.update_button_states()
     
     def create_separator(self):
         """Create a vertical separator"""
@@ -110,22 +139,36 @@ class LSXEditor(QWidget):
         separator.setFrameShape(QFrame.Shape.VLine)
         separator.setFrameShadow(QFrame.Shadow.Sunken)
         return separator
+
+    def has_content(self):
+        """Check if editor has meaningful content"""
+        content = self.text_editor.toPlainText().strip()
+
+        # Consider LSF preview content as valid content
+        if content.startswith("<!-- LSF File:") and "Converted Successfully" in content:
+            return True
+        
+        return bool(content) and not content.startswith("<!-- LSF File:")
     
     def update_button_states(self):
         """Update button enabled states based on current file"""
         has_file = self.current_file is not None
-        has_bg3_tool = self.bg3_tool is not None
+        has_content = self.has_content()
+        has_wine_wrapper = self.wine_wrapper is not None
         
-        self.save_btn.setEnabled(has_file and self.modified)
-        self.save_as_btn.setEnabled(has_file)
-        self.validate_btn.setEnabled(has_file)
-        self.format_btn.setEnabled(has_file)
+        # Save becomes enabled when modified, even if no current_file (preview mode)
+        self.save_btn.setEnabled(self.modified)
+        self.save_as_btn.setEnabled(has_file or self.modified)
+        self.validate_btn.setEnabled(has_file or self.modified)
+        self.format_btn.setEnabled(has_file or self.modified)
         
-        # Conversion buttons need divine.exe
-        conversion_enabled = has_file and has_bg3_tool
-        self.convert_lsx_btn.setEnabled(conversion_enabled)
-        self.convert_lsj_btn.setEnabled(conversion_enabled)
-        self.convert_lsf_btn.setEnabled(conversion_enabled)
+        # Conversion buttons need divine.exe and a file loaded
+        conversion_enabled = (has_file or has_content) and has_wine_wrapper
+
+        # Disable conversion to current format
+        self.convert_lsx_btn.setEnabled(conversion_enabled and self.current_format != 'lsx')
+        self.convert_lsj_btn.setEnabled(conversion_enabled and self.current_format != 'lsj')
+        self.convert_lsf_btn.setEnabled(conversion_enabled and self.current_format != 'lsf')
 
     def is_game_file(self, file_path):
         """Check if file is from game directory (should not be modified directly)"""
@@ -166,6 +209,8 @@ class LSXEditor(QWidget):
     def load_file(self, file_path):
         """Load and display any supported file format"""
         try:
+            # Store original file path for conversion reference
+            self.original_file_for_conversion = file_path
             
             # Detect format first
             file_format = self.parser.detect_file_format(file_path)
@@ -173,13 +218,14 @@ class LSXEditor(QWidget):
             
             # Handle LSF files differently
             if file_format == 'lsf':
-                if not self.bg3_tool:
+                if not self.wine_wrapper:
                     QMessageBox.critical(self, "Error", "LSF support requires divine.exe integration")
                     return
                 
                 content = f"<!-- LSF File: {os.path.basename(file_path)} -->\n"
-                content += "<!-- LSF files must be converted to LSX for editing -->\n"
-                content += "<!-- Use 'Convert to LSX' button to convert this file -->"
+                content += "<!-- LSF files are binary and cannot be previewed -->\n" 
+                content += "<!-- Use the 'Convert to LSX' button to convert this file -->"
+                content += "<!-- It will not be saved until you click 'Save As' -->"
             else:
                 # Read text files directly
                 with open(file_path, 'r', encoding='utf-8') as f:
@@ -206,7 +252,7 @@ class LSXEditor(QWidget):
     
     def load_lsf_file(self, file_path):
         """Load LSF file by converting to LSX first"""
-        if not self.bg3_tool:
+        if not self.wine_wrapper:
             QMessageBox.critical(self, "Error", "LSF support requires divine.exe integration")
             return
         
@@ -217,7 +263,7 @@ class LSXEditor(QWidget):
         # Create conversion thread
         temp_lsx = file_path + '.temp.lsx'
         self.lsf_conversion_thread = FileConversionThread(
-            self.bg3_tool, file_path, temp_lsx, 'lsf', 'lsx'
+            self.wine_wrapper, file_path, temp_lsx, 'lsf', 'lsx'
         )
         self.lsf_conversion_thread.conversion_finished.connect(self.lsf_conversion_completed)
         self.lsf_conversion_thread.start()
@@ -253,6 +299,7 @@ class LSXEditor(QWidget):
     def save_file(self):
         """Save file with format preservation and game file protection"""
         if not self.current_file:
+            # No current file means this is converted content - force Save As
             self.save_as_file()
             return
         
@@ -271,7 +318,6 @@ class LSXEditor(QWidget):
                 self.save_as_file()
             return
         
-        # Rest of the existing save_file() method...
         try:
             content = self.text_editor.toPlainText()
             
@@ -306,39 +352,99 @@ class LSXEditor(QWidget):
             QMessageBox.critical(self, "Error", f"Could not save file: {e}")
     
     def save_as_file(self):
-        """Save as new file with format selection"""
+        """Save as new file with format selection - enhanced for binary files"""
         initial_dir = self.settings_manager.get("working_directory", str(Path.home())) if self.settings_manager else str(Path.home())
         
-        # Determine default extension
+        # Determine default extension based on current format
         default_ext = ".lsx"
         if self.current_format:
             default_ext = f".{self.current_format}"
         
+        # Suggest a filename based on the original file if available
+        if hasattr(self, 'original_file_for_conversion') and self.original_file_for_conversion:
+            base_name = os.path.splitext(os.path.basename(self.original_file_for_conversion))[0]
+            suggested_name = f"{base_name}_converted{default_ext}"
+            initial_path = os.path.join(initial_dir, suggested_name)
+        else:
+            initial_path = initial_dir
+        
+        # Adjust file filter based on format
+        if self.current_format == 'lsf':
+            file_filter = "LSF Files (*.lsf);;All Files (*.*)"
+        else:
+            file_filter = "LSX Files (*.lsx);;LSJ Files (*.lsj);;XML Files (*.xml);;JSON Files (*.json);;All Files (*.*)"
+        
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save BG3 File", initial_dir,
-            "LSX Files (*.lsx);;LSJ Files (*.lsj);;XML Files (*.xml);;JSON Files (*.json);;All Files (*.*)"
+            self, "Save BG3 File", initial_path, file_filter
         )
         
         if file_path:
-            self.current_file = file_path
-            
-            # Update format based on extension
-            new_format = self.parser.detect_file_format(file_path)
-            if new_format != 'unknown':
-                self.current_format = new_format
-                self.format_label.setText(f"Format: {new_format.upper()}")
-                self.highlighter.set_format(new_format)
-            
-            # Update working directory
-            if self.settings_manager:
-                self.settings_manager.set("working_directory", os.path.dirname(file_path))
-            
-            self.save_file()
+            try:
+                # Handle binary files (LSF) differently
+                if self.current_format == 'lsf' and hasattr(self, 'converted_binary_file') and self.converted_binary_file:
+                    # Copy the binary file
+                    import shutil
+                    shutil.copy2(self.converted_binary_file, file_path)
+                    
+                    # Clean up the temp binary file
+                    try:
+                        os.remove(self.converted_binary_file)
+                        self.converted_binary_file = None
+                    except:
+                        pass
+                    
+                    success_msg = f"LSF file saved: {os.path.basename(file_path)}"
+                    QMessageBox.information(self, "Saved", success_msg)
+                else:
+                    # Handle text files normally
+                    content = self.text_editor.toPlainText()
+                    
+                    # Write the file
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                
+                # Update current file and state
+                self.current_file = file_path
+                
+                # Update format based on extension
+                new_format = self.parser.detect_file_format(file_path)
+                if new_format != 'unknown':
+                    self.current_format = new_format
+                    self.format_label.setText(f"Format: {new_format.upper()}")
+                    if hasattr(self, 'highlighter') and self.highlighter and new_format != 'lsf':
+                        self.highlighter.set_format(new_format)
+                
+                # Update working directory
+                if self.settings_manager:
+                    self.settings_manager.set("working_directory", os.path.dirname(file_path))
+                
+                self.modified = False
+                self.status_label.setText(f"Saved: {os.path.basename(file_path)}")
+                self.update_button_states()
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save file: {e}")
+
+    def perform_lsf_conversion(self, target_format, temp_output_file):
+        
+        # Determine source: file path or content
+        if self.current_file:
+            # Use file path
+            success = getattr(self.wine_wrapper, f"convert_{self.current_format}_to_{target_format}")(
+                self.current_file, temp_output_file
+            )
+        else:
+            # Use text content from editor
+            content = self.text_editor.toPlainText()
+            success = getattr(self.wine_wrapper, f"convert_{self.current_format}_to_{target_format}")(
+                content, temp_output_file, is_content=True
+            )
+        return success
     
     def convert_to_lsx(self):
         """Convert current file to LSX format"""
-        if not self.current_file:
-            QMessageBox.warning(self, "Warning", "No file loaded")
+        if not self.current_file and not self.has_content():
+            QMessageBox.warning(self, "Warning", "No file or content loaded")
             return
         
         if self.current_format == 'lsx':
@@ -349,21 +455,20 @@ class LSXEditor(QWidget):
     
     def convert_to_lsj(self):
         """Convert current file to LSJ format"""
-        if not self.current_file:
-            QMessageBox.warning(self, "Warning", "No file loaded")
+        if not self.current_file and not self.has_content():
+            QMessageBox.warning(self, "Warning", "No file or content loaded")
             return
         
         if self.current_format == 'lsj':
             QMessageBox.information(self, "Info", "File is already in LSJ format")
             return
         
-        # LSJ conversion is complex and may not be universally supported
-        QMessageBox.information(self, "Info", "LSJ conversion not yet implemented")
+        self.perform_conversion('lsj')
     
     def convert_to_lsf(self):
-        """Convert current file to LSF format"""
-        if not self.current_file:
-            QMessageBox.warning(self, "Warning", "No file loaded")
+        """Convert current file to LSX format"""
+        if not self.current_file and not self.has_content():
+            QMessageBox.warning(self, "Warning", "No file or content loaded")
             return
         
         if self.current_format == 'lsf':
@@ -371,11 +476,15 @@ class LSXEditor(QWidget):
             return
         
         self.perform_conversion('lsf')
-    
+
     def perform_conversion(self, target_format):
-        """Perform file format conversion"""
-        if not self.bg3_tool:
-            QMessageBox.critical(self, "Error", f"Conversion to {target_format.upper()} requires divine.exe")
+        """Perform file format conversion for preview using progress dialog"""
+        
+        # Only LSX/LSJ conversions that involve LSF need wine_wrapper
+        needs_wine = (self.current_format == 'lsf' or target_format == 'lsf')
+        
+        if needs_wine and not self.wine_wrapper:
+            QMessageBox.critical(self, "Error", f"Conversion involving LSF requires divine.exe")
             return
         
         # Save current content first if modified
@@ -391,29 +500,413 @@ class LSXEditor(QWidget):
             elif reply == QMessageBox.StandardButton.Cancel:
                 return
         
-        # Choose output file
-        output_file, _ = QFileDialog.getSaveFileName(
-            self, f"Save as {target_format.upper()}",
-            os.path.splitext(self.current_file)[0] + f".{target_format}",
-            f"{target_format.upper()} Files (*.{target_format});;All Files (*.*)"
-        )
+        # Create temporary file for conversion output
+        temp_fd, temp_output_file = tempfile.mkstemp(suffix=f".{target_format}")
+        os.close(temp_fd)
         
-        if not output_file:
-            return
+        try:
+            if needs_wine:
+                # Use threaded wine conversion with progress dialog
+                self.perform_threaded_wine_conversion(target_format, temp_output_file)
+            else:
+                # Handle LSX <-> LSJ conversions (immediate, no dialog needed)
+                success = self.perform_text_conversion(target_format, temp_output_file)
+                if success:
+                    self.preview_conversion_completed(True, {"target_path": temp_output_file}, target_format, temp_output_file)
+                else:
+                    self.preview_conversion_completed(False, {"error": "Conversion failed"}, target_format, temp_output_file)
         
-        # Start conversion thread
-        self.conversion_thread = FileConversionThread(
-            self.bg3_tool, self.current_file, output_file, 
-            self.current_format, target_format
-        )
-        self.conversion_thread.conversion_finished.connect(self.conversion_completed)
-        self.conversion_thread.start()
+        except Exception as e:
+            self.preview_conversion_completed(False, {"error": str(e)}, target_format, temp_output_file)
+    
+    def perform_threaded_wine_conversion(self, target_format, temp_output_file):
+        """Perform conversion using threaded wine wrapper with progress dialog"""
+        try:
+            # Create and show progress dialog
+            self.progress_dialog = ProgressDialog(self, f"Converting to {target_format.upper()}")
+            
+            # Set file info if available
+            if self.current_file:
+                self.progress_dialog.set_file_info(self.current_file)
+            else:
+                self.progress_dialog.file_info_label.setText("Converting editor content...")
+            
+            self.progress_dialog.show()
+            
+            # Determine source file
+            source_file = None
+            
+            if self.current_file:
+                source_file = self.current_file
+            else:
+                # Create temporary source file from editor content
+                content = self.text_editor.toPlainText()
+                temp_source_fd, source_file = tempfile.mkstemp(suffix=f".{self.current_format}")
+                
+                try:
+                    with os.fdopen(temp_source_fd, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    # Store temp file for cleanup
+                    self.temp_source_file = source_file
+                except Exception as e:
+                    os.close(temp_source_fd)
+                    raise e
+            
+            # Handle LSJ to LSF conversion (requires intermediate LSX step)
+            if self.current_format == 'lsj' and target_format == 'lsf':
+                self.progress_dialog.update_progress(10, "Converting LSJ to intermediate LSX format...")
+                
+                # First convert LSJ to LSX
+                temp_lsx = temp_output_file + '.temp.lsx'
+                if self.current_file:
+                    success = self.convert_lsj_to_lsx_content(temp_lsx)
+                else:
+                    success = self.convert_lsj_to_lsx_content(temp_lsx, content)
+                
+                if success:
+                    source_file = temp_lsx
+                    source_format = 'lsx'
+                    self.temp_intermediate_file = temp_lsx
+                    self.progress_dialog.update_progress(25, "Intermediate LSX created, starting LSF conversion...")
+                else:
+                    self.progress_dialog.close()
+                    self.conversion_error("Failed to convert LSJ to intermediate LSX format")
+                    return
+            else:
+                source_format = self.current_format
+                self.progress_dialog.update_progress(15, "Preparing conversion...")
+            
+            # Create and start conversion thread
+            self.conversion_thread = FileConversionThread(
+                wine_wrapper=self.wine_wrapper,
+                source_path=source_file,
+                target_path=temp_output_file,
+                source_format=source_format,
+                target_format=target_format
+            )
+            
+            # Connect the thread to the progress dialog for cancellation
+            self.progress_dialog.set_operation_thread(self.conversion_thread)
+            
+            # Connect signals
+            self.conversion_thread.progress_updated.connect(self.conversion_progress_updated)
+            self.conversion_thread.conversion_finished.connect(
+                lambda success, result: self.threaded_conversion_completed(
+                    success, result, target_format, temp_output_file
+                )
+            )
+            self.conversion_thread.finished.connect(self.conversion_thread_finished)
+            
+            # Start the conversion
+            self.conversion_thread.start()
+            self.progress_dialog.update_progress(30, "Starting conversion process...")
+            
+        except Exception as e:
+            if hasattr(self, 'progress_dialog'):
+                self.progress_dialog.close()
+            self.conversion_error(f"Failed to start conversion: {e}")
+    
+    def conversion_progress_updated(self, progress, message):
+        """Handle conversion progress updates and forward to progress dialog"""
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            # Map the conversion progress to dialog progress (30-90% range for conversion)
+            dialog_progress = 30 + int((progress / 100) * 60)
+            self.progress_dialog.update_progress(dialog_progress, message)
+    
+    def threaded_conversion_completed(self, success, result_data, target_format, temp_output_file):
+        """Handle threaded conversion completion with progress dialog"""
+        try:
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                if success:
+                    self.progress_dialog.update_progress(95, "Conversion complete, preparing preview...")
+                else:
+                    error_msg = result_data.get("error", result_data.get("output", "Unknown error"))
+                    self.progress_dialog.update_progress(100, f"Conversion failed: {error_msg}")
+            
+            if success:
+                # Check if the output file actually exists and has content
+                if os.path.exists(temp_output_file):
+                    file_size = os.path.getsize(temp_output_file)
+                    
+                    if file_size > 0:
+                        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                            self.progress_dialog.update_progress(100, "Loading converted file...")
+                        
+                        self.preview_conversion_completed(True, result_data, target_format, temp_output_file)
+                    else:
+                        self.preview_conversion_completed(False, {"error": "Output file is empty"}, target_format, temp_output_file)
+                else:
+                    self.preview_conversion_completed(False, {"error": "Output file was not created"}, target_format, temp_output_file)
+            else:
+                error_msg = result_data.get("error", result_data.get("output", "Unknown error"))
+                self.preview_conversion_completed(False, {"error": error_msg}, target_format, temp_output_file)
+                
+        except Exception as e:
+            self.preview_conversion_completed(False, {"error": f"Exception: {str(e)}"}, target_format, temp_output_file)
+        finally:
+            # Clean up temporary files
+            self.cleanup_conversion_temps()
+            
+            # Close progress dialog
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                self.progress_dialog.close()
+                self.progress_dialog = None
+    
+    def conversion_thread_finished(self):
+        """Handle conversion thread cleanup"""
+        if hasattr(self, 'conversion_thread'):
+            self.conversion_thread.deleteLater()
+            self.conversion_thread = None
+
+    def conversion_error(self, error_message):
+        """Handle conversion errors and close progress dialog"""
+        QMessageBox.critical(self, "Conversion Failed", f"Error: {error_message}")
+        self.status_label.setText("Conversion failed")
+        self.cleanup_conversion_temps()
         
-        # Show progress (simplified for now)
-        QMessageBox.information(self, "Converting", f"Converting to {target_format.upper()}...")
+        # Close progress dialog if open
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+    
+    def cleanup_conversion_temps(self):
+        """Clean up temporary files created during conversion"""
+        # Clean up temporary source file (from editor content)
+        if hasattr(self, 'temp_source_file'):
+            try:
+                os.remove(self.temp_source_file)
+            except:
+                pass
+            delattr(self, 'temp_source_file')
+        
+        # Clean up intermediate conversion file (LSJ->LSX->LSF)
+        if hasattr(self, 'temp_intermediate_file'):
+            try:
+                os.remove(self.temp_intermediate_file)
+            except:
+                pass
+            delattr(self, 'temp_intermediate_file')
+
+    def cancel_conversion(self):
+        """Cancel ongoing conversion"""
+        if hasattr(self, 'conversion_thread') and self.conversion_thread and self.conversion_thread.isRunning():
+            self.conversion_thread.terminate()
+            self.conversion_thread.wait(3000)
+            
+            if self.conversion_thread.isRunning():
+                self.conversion_thread.kill()
+            
+            self.status_label.setText("Conversion cancelled")
+            self.cleanup_conversion_temps()
+        
+        # Close progress dialog
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None
+        
+    def perform_text_conversion(self, target_format, temp_output_file):
+        """Perform conversion between text formats (LSX <-> LSJ)"""
+        try:
+            content = self.text_editor.toPlainText()
+            
+            if self.current_format == 'lsx' and target_format == 'lsj':
+                return self.convert_lsx_to_lsj_content(content, temp_output_file)
+            elif self.current_format == 'lsj' and target_format == 'lsx':
+                return self.convert_lsj_to_lsx_content(temp_output_file, content)
+            else:
+                return False
+        
+        except Exception as e:
+            print(f"Text conversion error: {e}")
+            return False
+    
+    def convert_lsx_to_lsj_content(self, lsx_content, output_file):
+        """Convert LSX content to LSJ format"""
+        try:
+            import xml.etree.ElementTree as ET
+            import json
+            
+            # Parse XML
+            root = ET.fromstring(lsx_content)
+            
+            # Convert to JSON structure (simplified conversion)
+            json_data = {
+                "save": {
+                    "header": {
+                        "version": root.get("version", "unknown")
+                    },
+                    "regions": {}
+                }
+            }
+            
+            # Convert regions
+            for region in root.findall('.//region'):
+                region_id = region.get('id', 'unknown')
+                region_data = {}
+                
+                # Convert nodes
+                for node in region.findall('.//node'):
+                    node_id = node.get('id', 'unknown')
+                    node_data = {}
+                    
+                    # Convert attributes
+                    for attr in node.findall('.//attribute'):
+                        attr_id = attr.get('id')
+                        attr_value = attr.get('value')
+                        attr_type = attr.get('type', 'string')
+                        
+                        if attr_id:
+                            node_data[attr_id] = {
+                                "type": attr_type,
+                                "value": attr_value
+                            }
+                    
+                    if node_data:
+                        region_data[node_id] = node_data
+                
+                if region_data:
+                    json_data["save"]["regions"][region_id] = region_data
+            
+            # Write JSON file
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(json_data, f, indent=2, ensure_ascii=False)
+            
+            return True
+        
+        except Exception as e:
+            print(f"LSX to LSJ conversion error: {e}")
+            return False
+    
+    def convert_lsj_to_lsx_content(self, output_file, lsj_content=None):
+        """Convert LSJ content to LSX format"""
+        try:
+            import json
+            import xml.etree.ElementTree as ET
+            
+            if lsj_content:
+                json_data = json.loads(lsj_content)
+            else:
+                # Read from current file
+                with open(self.current_file, 'r', encoding='utf-8') as f:
+                    json_data = json.load(f)
+            
+            # Create XML structure
+            root = ET.Element("save")
+            
+            # Set version
+            if "save" in json_data and "header" in json_data["save"]:
+                version = json_data["save"]["header"].get("version", "4.0.0.0")
+            else:
+                version = "4.0.0.0"
+            
+            root.set("version", version)
+            
+            # Convert regions
+            if "save" in json_data and "regions" in json_data["save"]:
+                regions_data = json_data["save"]["regions"]
+                
+                for region_id, region_content in regions_data.items():
+                    region_elem = ET.SubElement(root, "region")
+                    region_elem.set("id", region_id)
+                    
+                    for node_id, node_content in region_content.items():
+                        node_elem = ET.SubElement(region_elem, "node")
+                        node_elem.set("id", node_id)
+                        
+                        for attr_id, attr_data in node_content.items():
+                            attr_elem = ET.SubElement(node_elem, "attribute")
+                            attr_elem.set("id", attr_id)
+                            
+                            if isinstance(attr_data, dict):
+                                attr_elem.set("type", attr_data.get("type", "string"))
+                                attr_elem.set("value", str(attr_data.get("value", "")))
+                            else:
+                                attr_elem.set("type", "string")
+                                attr_elem.set("value", str(attr_data))
+            
+            # Format and write XML
+            self.indent_xml(root)
+            tree = ET.ElementTree(root)
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write('<?xml version="1.0" encoding="UTF-8"?>\n')
+                tree.write(f, encoding='unicode', xml_declaration=False)
+            
+            return True
+        
+        except Exception as e:
+            print(f"LSJ to LSX conversion error: {e}")
+            return False
+
+    def preview_conversion_completed(self, success, result_data, target_format, temp_file_path):
+        """Handle completed conversion for preview"""
+        try:
+            if success:
+                # Handle binary vs text files differently
+                if target_format == 'lsf':
+                    # LSF files are binary - show a placeholder instead of content
+                    file_size = os.path.getsize(temp_file_path)
+                    converted_content = f"<!-- LSF File: Converted Successfully -->\n"
+                    converted_content += f"<!-- File Size: {file_size:,} bytes -->\n"
+                    converted_content += f"<!-- LSF files are binary and cannot be previewed as text -->\n"
+                    converted_content += f"<!-- Use 'Save As' to save this LSF file -->\n"
+                    converted_content += f"<!-- Or convert back to LSX to view content -->"
+                else:
+                    # Text files (LSX, LSJ) - load content normally
+                    with open(temp_file_path, 'r', encoding='utf-8') as f:
+                        converted_content = f.read()
+                
+                # Update editor with converted content
+                self.text_editor.setPlainText(converted_content)
+                
+                # Update UI to reflect the new format
+                self.current_format = target_format
+                self.format_label.setText(f"Format: {target_format.upper()} (Preview)")
+                
+                if target_format == 'lsf':
+                    self.status_label.setText(f"Converted to {target_format.upper()} - binary file ready to save")
+                else:
+                    self.status_label.setText(f"Converted to {target_format.upper()} - use Save/Save As to keep changes")
+                
+                # Mark as modified so save buttons become available
+                self.modified = True
+                
+                # Update syntax highlighter for new format (skip for binary files)
+                if hasattr(self, 'highlighter') and self.highlighter and target_format != 'lsf':
+                    self.highlighter.set_format(target_format)
+                
+                # Clear the current_file since this is now a preview of converted content
+                # User will need to Save As to choose where to save it
+                self.current_file = None
+                
+                # Store the binary file path for LSF files so we can save it later
+                if target_format == 'lsf':
+                    self.converted_binary_file = temp_file_path
+                else:
+                    self.converted_binary_file = None
+                
+                self.update_button_states()
+                
+            else:
+                error_msg = result_data.get("error", result_data.get("output", "Unknown error"))
+                QMessageBox.critical(self, "Conversion Failed", f"Error: {error_msg}")
+                self.status_label.setText("Conversion failed")
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Preview Error", f"Could not preview converted file: {e}")
+            self.status_label.setText("Preview failed")
+        
+        finally:
+            # Clean up temporary file (except for LSF files that we need to keep for saving)
+            if target_format != 'lsf':
+                try:
+                    if os.path.exists(temp_file_path):
+                        os.remove(temp_file_path)
+                except Exception as e:
+                    print(f"Warning: Could not remove temp file {temp_file_path}: {e}")
     
     def conversion_completed(self, success, result_data):
-        """Handle completed conversion"""
+        """Handle completed conversion (legacy method, kept for compatibility)"""
         if success:
             QMessageBox.information(self, "Success", f"Conversion completed successfully!")
             
@@ -432,7 +925,7 @@ class LSXEditor(QWidget):
     
     def validate_file(self):
         """Validate current file based on format"""
-        if not self.current_file:
+        if not self.current_file and not self.modified:
             QMessageBox.warning(self, "Warning", "No file loaded")
             return
         
@@ -455,7 +948,7 @@ class LSXEditor(QWidget):
     
     def format_file(self):
         """Format/prettify current file content"""
-        if not self.current_file:
+        if not self.current_file and not self.modified:
             QMessageBox.warning(self, "Warning", "No file loaded")
             return
         
@@ -506,4 +999,6 @@ class LSXEditor(QWidget):
             self.modified = True
             if self.current_file:
                 self.status_label.setText(f"Modified: {os.path.basename(self.current_file)}")
+            else:
+                self.status_label.setText("Modified: Converted content (use Save As)")
             self.update_button_states()

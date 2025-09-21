@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 """
-Settings pane - Fixed to inherit from QDialog
+Settings Dialog - Updated for Wine Integration
 """
 
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QGroupBox, QScrollArea, QWidget,
                             QFrame, QLineEdit, QHBoxLayout, QPushButton, QComboBox, QSpinBox,
-                            QFileDialog, QMessageBox, QLabel)
+                            QFileDialog, QMessageBox, QLabel, QTextEdit)
 from PyQt6.QtCore import Qt, QTimer
 from pathlib import Path
 
-class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
-    """Native Mac-style settings dialog"""
+class SettingsDialog(QDialog):
+    """Native Mac-style settings dialog with Wine validation"""
     
     def __init__(self, parent, settings_manager):
-        super().__init__(parent)  # Simplified - QDialog handles modality
+        super().__init__(parent)
         self.settings_manager = settings_manager
         self.setWindowTitle("Preferences")
-        self.setFixedSize(800, 500)
-        self.setModal(True)  # Make it modal
+        self.setFixedSize(900, 600)  # Made slightly larger
+        self.setModal(True)
         
         self.setup_ui()
         self.load_current_settings()
@@ -37,6 +37,50 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
         settings_widget = QWidget()
         settings_layout = QVBoxLayout(settings_widget)
         
+        # Wine/Tools section (moved to top)
+        wine_group = QGroupBox("Wine & Tool Configuration")
+        wine_group.setStyleSheet("QGroupBox { font-size: 18px; font-weight: bold; }")
+        wine_layout = QFormLayout(wine_group)
+        
+        # Wine path
+        self.wine_path_edit = QLineEdit()
+        self.wine_path_edit.setMinimumWidth(500)
+        wine_path_layout = QHBoxLayout()
+        wine_path_layout.addWidget(self.wine_path_edit)
+        
+        browse_wine_btn = QPushButton("Browse...")
+        browse_wine_btn.clicked.connect(self.browse_wine_path)
+        wine_path_layout.addWidget(browse_wine_btn)
+        
+        test_wine_btn = QPushButton("Test")
+        test_wine_btn.clicked.connect(self.test_wine)
+        wine_path_layout.addWidget(test_wine_btn)
+        
+        wine_layout.addRow("Wine Executable:", wine_path_layout)
+        
+        # Divine path
+        self.divine_path_edit = QLineEdit()
+        self.divine_path_edit.setMinimumWidth(500)
+        divine_path_layout = QHBoxLayout()
+        divine_path_layout.addWidget(self.divine_path_edit)
+        
+        browse_divine_btn = QPushButton("Browse...")
+        browse_divine_btn.clicked.connect(self.browse_divine_path)
+        divine_path_layout.addWidget(browse_divine_btn)
+        
+        test_divine_btn = QPushButton("Test")
+        test_divine_btn.clicked.connect(self.test_divine)
+        divine_path_layout.addWidget(test_divine_btn)
+        
+        wine_layout.addRow("Divine.exe Path:", divine_path_layout)
+        
+        # Wine status display
+        self.wine_status_label = QLabel("Status: Not tested")
+        self.wine_status_label.setStyleSheet("color: gray;")
+        wine_layout.addRow("Wine Status:", self.wine_status_label)
+        
+        settings_layout.addWidget(wine_group)
+        
         # Paths section
         paths_group = QGroupBox("Tool Paths")
         paths_group.setStyleSheet("QGroupBox { font-size: 18px; font-weight: bold; }")
@@ -52,28 +96,6 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
         working_dir_layout.addWidget(browse_working_btn)
         
         paths_layout.addRow("Working Directory:", working_dir_layout)
-        
-        # Wine path
-        self.wine_path_edit = QLineEdit()
-        self.wine_path_edit.setMinimumWidth(500)
-        wine_path_layout = QHBoxLayout()
-        wine_path_layout.addWidget(self.wine_path_edit)
-        browse_wine_btn = QPushButton("Browse...")
-        browse_wine_btn.clicked.connect(self.browse_wine_path)
-        wine_path_layout.addWidget(browse_wine_btn)
-        
-        paths_layout.addRow("Wine Executable:", wine_path_layout)
-        
-        # Divine path
-        self.divine_path_edit = QLineEdit()
-        self.divine_path_edit.setMinimumWidth(500)
-        divine_path_layout = QHBoxLayout()
-        divine_path_layout.addWidget(self.divine_path_edit)
-        browse_divine_btn = QPushButton("Browse...")
-        browse_divine_btn.clicked.connect(self.browse_divine_path)
-        divine_path_layout.addWidget(browse_divine_btn)
-        
-        paths_layout.addRow("Divine.exe Path:", divine_path_layout)
         
         settings_layout.addWidget(paths_group)
         
@@ -125,7 +147,7 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
         button_layout.addStretch()
         
         cancel_btn = QPushButton("Cancel")
-        cancel_btn.clicked.connect(self.reject)  # Use reject() instead of close()
+        cancel_btn.clicked.connect(self.reject)
         button_layout.addWidget(cancel_btn)
         
         save_btn = QPushButton("Save")
@@ -158,6 +180,74 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
         # Start calculating disk usage
         QTimer.singleShot(100, self.calculate_disk_usage)
     
+    def test_wine(self):
+        """Test Wine installation"""
+        wine_path = self.wine_path_edit.text().strip()
+        
+        if not wine_path:
+            self.wine_status_label.setText("Status: No Wine path specified")
+            self.wine_status_label.setStyleSheet("color: red;")
+            return
+        
+        if not Path(wine_path).exists():
+            self.wine_status_label.setText("Status: Wine executable not found")
+            self.wine_status_label.setStyleSheet("color: red;")
+            return
+        
+        try:
+            # Test Wine with temporary settings
+            from mac_pak.tools.wine_environment import WineEnvironmentManager
+            
+            temp_wine_env = WineEnvironmentManager(wine_path=wine_path)
+            success, message = temp_wine_env.validate_wine_installation()
+            
+            if success:
+                self.wine_status_label.setText(f"Status: {message}")
+                self.wine_status_label.setStyleSheet("color: green;")
+            else:
+                self.wine_status_label.setText(f"Status: {message}")
+                self.wine_status_label.setStyleSheet("color: red;")
+                
+        except Exception as e:
+            self.wine_status_label.setText(f"Status: Error testing Wine - {e}")
+            self.wine_status_label.setStyleSheet("color: red;")
+    
+    def test_divine(self):
+        """Test Divine.exe accessibility"""
+        divine_path = self.divine_path_edit.text().strip()
+        wine_path = self.wine_path_edit.text().strip()
+        
+        if not divine_path:
+            QMessageBox.information(self, "Test Divine.exe", "No Divine.exe path specified")
+            return
+        
+        if not wine_path:
+            QMessageBox.warning(self, "Test Divine.exe", "Wine path must be set first")
+            return
+        
+        # Remove Z: prefix for checking local file
+        local_divine_path = divine_path.replace("Z:", "")
+        
+        if not Path(local_divine_path).exists():
+            QMessageBox.warning(self, "Test Divine.exe", f"Divine.exe not found at: {local_divine_path}")
+            return
+        
+        try:
+            # Test Divine.exe through Wine
+            from mac_pak.tools.wine_wrapper import WineWrapper
+            
+            # Create temporary wrapper just for testing
+            temp_wrapper = WineWrapper(wine_path=wine_path, lslib_path=divine_path)
+            success, output = temp_wrapper.run_divine_command("help")
+            
+            if success:
+                QMessageBox.information(self, "Test Divine.exe", "Divine.exe is working correctly!")
+            else:
+                QMessageBox.warning(self, "Test Divine.exe", f"Divine.exe test failed:\n{output}")
+                
+        except Exception as e:
+            QMessageBox.warning(self, "Test Divine.exe", f"Error testing Divine.exe:\n{e}")
+    
     def calculate_disk_usage(self):
         """Calculate current disk usage"""
         try:
@@ -185,8 +275,6 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
                 QMessageBox.information(self, "Cleanup", "No files to clean up.")
                 return
             
-            # Implementation would check file modification times and remove old files
-            # For now, just show a confirmation
             reply = QMessageBox.question(
                 self, "Cleanup Confirmation",
                 f"This will remove extracted files older than {cleanup_days} days. Continue?",
@@ -224,6 +312,9 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
         # Cache size and cleanup
         self.cache_size_spin.setValue(int(self.settings_manager.get("max_cache_size_gb", 5)))
         self.cleanup_days_spin.setValue(int(self.settings_manager.get("auto_cleanup_days", 30)))
+        
+        # Test Wine setup on load
+        QTimer.singleShot(500, self.test_wine)
     
     def browse_working_dir(self):
         """Browse for working directory"""
@@ -243,6 +334,8 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
         )
         if file_path:
             self.wine_path_edit.setText(file_path)
+            # Test immediately after selection
+            QTimer.singleShot(100, self.test_wine)
     
     def browse_divine_path(self):
         """Browse for Divine.exe"""
@@ -252,7 +345,9 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
             "Executable Files (*.exe);;All Files (*)"
         )
         if file_path:
-            self.divine_path_edit.setText(file_path)
+            # Convert to Wine path format (Z: drive)
+            wine_path = f"Z:{file_path}"
+            self.divine_path_edit.setText(wine_path)
     
     def browse_extracted_location(self):
         """Browse for extracted files location"""
@@ -278,5 +373,13 @@ class SettingsDialog(QDialog):  # Changed from QWidget to QDialog
         
         self.settings_manager.sync()
         
-        QMessageBox.information(self, "Settings", "Settings saved successfully!")
-        self.accept()  # Use accept() instead of close()
+        # Validate final setup
+        validation = self.settings_manager.validate_wine_setup()
+        if validation['valid']:
+            QMessageBox.information(self, "Settings", "Settings saved successfully!\nWine setup is valid.")
+        else:
+            issues_text = "\n".join(f"• {issue}" for issue in validation['issues'])
+            QMessageBox.warning(self, "Settings Saved", 
+                              f"Settings saved, but there are configuration issues:\n\n{issues_text}")
+        
+        self.accept()
