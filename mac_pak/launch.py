@@ -9,6 +9,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
 import PyQt6.QtCore
+from .version import *
 
 def main():
     """Main application entry point"""
@@ -37,10 +38,10 @@ def main():
         app = QApplication(sys.argv)
         
         # Set application properties for Mac
-        app.setApplicationName("MacPak")
-        app.setApplicationVersion("0.0")
-        app.setOrganizationName("CyberDeco")
-        app.setOrganizationDomain("MacPak.app")
+        app.setApplicationName(get_version_info()['name'])
+        app.setApplicationVersion(get_version_info()['build'])
+        app.setOrganizationName(get_version_info()['author'])
+        app.setOrganizationDomain(f"{get_version_info()['name']}.app")
 
         # Use native Mac file dialogs
         app.setAttribute(Qt.ApplicationAttribute.AA_DontUseNativeDialogs, False)
@@ -52,8 +53,9 @@ def main():
         else:
             # Running in development
             base_path = Path(__file__).parent
+            print(base_path)
         
-        style_path = base_path / "mac_pak" / "resources" / "styles" / "main.qss"
+        style_path = base_path / "resources" / "styles" / "main.qss"
         
         # Load stylesheet if it exists
         if style_path.exists():
@@ -64,10 +66,10 @@ def main():
             print(f"Warning: Stylesheet not found at {style_path}")
         
         # Import the main window class
-        from .ui.main_window import BG3ModToolkitMainWindow
+        from .ui.main_window import MacPakMainWindow
         
         # Create and show main window
-        window = BG3ModToolkitMainWindow()
+        window = MacPakMainWindow()
         window.show()
         
         # Run the application

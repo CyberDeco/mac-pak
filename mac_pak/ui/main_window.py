@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-BG3 Mac Modding Toolkit - PyQt6 Version
+BG3 MacPak Modding Toolkit - PyQt6 Version
 A native macOS application for modding Baldur's Gate 3 using Wine and divine.exe
 """
 
@@ -12,13 +12,13 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QTextEdit, QTabWidget, QGroupBox, 
     QFileDialog, QMessageBox, QStatusBar, QMenuBar
 )
-from PyQt6.QtCore import Qt, QSettings, QTimer
+from PyQt6.QtCore import Qt, QSettings, QTimer, QThread, pyqtSignal
 from PyQt6.QtGui import QAction, QFont
 
 # Import core components with correct paths
 from ..core.settings import SettingsManager
 from ..core.update_checker import UpdateChecker
-from ..dialogs.update_dialog import UpdateDialog
+from .dialogs.update_dialog import UpdateDialog
 from ..tools.wine_wrapper import WineWrapper
 from .tabs.pak_tools_tab import PakToolsTab
 from .tabs.assets_browser_tab import AssetBrowserTab
@@ -27,7 +27,22 @@ from .tabs.index_search_tab import IndexSearchTab
 from .tabs.uuid_generator_tab import BG3IDGeneratorTab
 from .dialogs.settings_dialog import SettingsDialog
 
-class BG3ModToolkitMainWindow(QMainWindow):
+class UpdateCheckThread(QThread):
+    """Proper QThread subclass for update checking"""
+    
+    update_result = pyqtSignal(dict)
+    
+    def run(self):
+        """Run update check in background"""
+        try:
+            checker = UpdateChecker()
+            result = checker.check_for_updates()
+            self.update_result.emit(result)
+        except Exception as e:
+            self.update_result.emit({'error': str(e)})
+
+
+class MacPakMainWindow(QMainWindow):
     """Main application window with native Mac styling and threading support"""
     
     def __init__(self):
@@ -36,6 +51,7 @@ class BG3ModToolkitMainWindow(QMainWindow):
         # Initialize settings first
         self.settings_manager = SettingsManager()
         self.wine_wrapper = None
+        self.update_thread = None
         
         # UI setup
         self.setup_window_properties()
@@ -55,37 +71,49 @@ class BG3ModToolkitMainWindow(QMainWindow):
         QTimer.singleShot(3000, self.check_for_updates)  # Check after 3 seconds
     
     def check_for_updates(self, show_no_update_message=False):
-        """Check for updates"""
-        def check_updates_worker():
-            checker = UpdateChecker()
-            return checker.check_for_updates()
+        """Check for updates using proper threading"""
+        # Don't start new check if one is already running
+        if self.update_thread and self.update_thread.isRunning():
+            return
         
-        def handle_update_result(result):
-            if result.get('error'):
-                if show_no_update_message:
-                    QMessageBox.warning(self, "Update Check", f"Failed to check for updates: {result['error']}")
-                return
+        # Clean up any previous thread
+        if self.update_thread:
+            self.update_thread.deleteLater()
+        
+        # Create and start new update thread
+        self.update_thread = UpdateCheckThread(self)
+        self.update_thread.update_result.connect(
+            lambda result: self.handle_update_result(result, show_no_update_message)
+        )
+        self.update_thread.finished.connect(self.on_update_check_finished)
+        self.update_thread.start()
+    
+    def handle_update_result(self, result, show_no_update_message):
+        """Handle update check result"""
+        if result.get('error'):
+            if show_no_update_message:
+                QMessageBox.warning(self, "Update Check", f"Failed to check for updates: {result['error']}")
+            return
+        
+        if result['update_available']:
+            # Check if user already skipped this version
+            skipped_version = self.settings_manager.get("skipped_version", "")
             
-            if result['update_available']:
-                # Check if user already skipped this version
-                settings = SettingsManager()
-                skipped_version = settings.get("skipped_version", "")
-                
-                if skipped_version != result['latest_version']:
-                    dialog = UpdateDialog(result, self)
-                    dialog.exec()
-            elif show_no_update_message:
-                QMessageBox.information(self, "No Updates", "You're running the latest version!")
-        
-        # Run in background thread
-        worker = QThread()
-        worker.run = check_updates_worker
-        worker.finished.connect(lambda: handle_update_result(worker.result))
-        worker.start()
+            if skipped_version != result['latest_version']:
+                dialog = UpdateDialog(result, self)
+                dialog.exec()
+        elif show_no_update_message:
+            QMessageBox.information(self, "No Updates", "You're running the latest version!")
+    
+    def on_update_check_finished(self):
+        """Clean up update thread when finished"""
+        if self.update_thread:
+            self.update_thread.deleteLater()
+            self.update_thread = None
     
     def setup_window_properties(self):
         """Setup main window properties with Mac styling"""
-        self.setWindowTitle("BG3 Mac Modding Toolkit")
+        self.setWindowTitle("MacPak")
         self.setMinimumSize(1000, 600)
         
         # Set up Mac-style window
@@ -98,19 +126,19 @@ class BG3ModToolkitMainWindow(QMainWindow):
         """Apply Mac-native styling"""
         app = QApplication.instance()
         if app:
-            app.setApplicationName("BG3 Mac Modding Toolkit")
-            app.setApplicationVersion("2.0")
-            app.setOrganizationName("BG3ModToolkit")
-            app.setOrganizationDomain("bg3modtoolkit.app")
+            app.setApplicationName("MacPak")
+            app.setApplicationVersion("0.1.0")
+            app.setOrganizationName("CyberDeco")
+            app.setOrganizationDomain("MacPak.app")
     
     def setup_menubar(self):
         """Setup native Mac menubar"""
         menubar = self.menuBar()
         
         # Application menu
-        app_menu = menubar.addMenu("BG3 Toolkit")
+        app_menu = menubar.addMenu("MacPak")
         
-        about_action = QAction("About BG3 Toolkit", self)
+        about_action = QAction("About MacPak", self)
         about_action.triggered.connect(self.show_about)
         app_menu.addAction(about_action)
         
@@ -135,6 +163,11 @@ class BG3ModToolkitMainWindow(QMainWindow):
         reinit_action = QAction("Reinitialize Backend", self)
         reinit_action.triggered.connect(self.reinitialize_backend)
         tools_menu.addAction(reinit_action)
+        
+        # Add manual update check
+        check_updates_action = QAction("Check for Updates...", self)
+        check_updates_action.triggered.connect(lambda: self.check_for_updates(True))
+        tools_menu.addAction(check_updates_action)
     
     def setup_main_interface(self):
         """Setup the main interface with tabs"""
@@ -201,7 +234,7 @@ class BG3ModToolkitMainWindow(QMainWindow):
         try:
             wine_path = self.settings_manager.get("wine_path")
             divine_path = self.settings_manager.get("divine_path")
-            
+
             if not wine_path or not divine_path:
                 self.backend_status.setText("Backend: Needs configuration")
                 self.backend_status.setStyleSheet("color: orange; font-weight: bold;")
@@ -261,6 +294,11 @@ class BG3ModToolkitMainWindow(QMainWindow):
     
     def closeEvent(self, event):
         """Handle window close event"""
+        # Clean up update thread
+        if self.update_thread and self.update_thread.isRunning():
+            self.update_thread.quit()
+            self.update_thread.wait(1000)
+        
         self.settings_manager.set("window_geometry", self.saveGeometry())
         self.settings_manager.sync()
         event.accept()
@@ -308,9 +346,9 @@ class BG3ModToolkitMainWindow(QMainWindow):
     def show_about(self):
         """Show about dialog"""
         QMessageBox.about(
-            self, "About BG3 Mac Modding Toolkit",
+            self, "About MacPak",
             """
-            <h3>BG3 Mac Modding Toolkit</h3>
+            <h3>MacPak</h3>
             <p>A native macOS application for modding Baldur's Gate 3.</p>
             
             <p><b>Status:</b> Connected - PAK Tools now functional</p>

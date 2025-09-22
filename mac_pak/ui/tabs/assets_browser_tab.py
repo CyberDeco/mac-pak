@@ -11,13 +11,13 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QPush
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
-from ..widgets.asset_browser.preview_manager import FilePreviewManager, PreviewWidget, get_file_icon
-from ..widgets.pak_tools.drop_label import DropLabel
-from ..dialogs.settings_dialog import SettingsDialog
+#from ..widgets.asset_browser.preview_manager import FilePreviewManager, PreviewWidget, get_file_icon
 
-from ..threads.pak_operations_thread import DivineOperationThread, ConversionPAKThread
+from ...data.file_preview import get_file_icon
+from ...data.file_preview import FilePreviewManager
+
+from ..widgets.asset_browser.preview_widget import PreviewWidget
 from ...data.parsers.larian_parser import UniversalBG3Parser
-
 
 class AssetBrowserTab(QWidget):
     """Asset Browser tab for the main application"""
@@ -31,9 +31,10 @@ class AssetBrowserTab(QWidget):
         
         if wine_wrapper:
             self.parser.set_wine_wrapper(wine_wrapper)
-        
+
         # Initialize preview system
-        self.preview_manager = FilePreviewManager(wine_wrapper, self.parser)
+        self.preview_widget = PreviewWidget(parent, self.wine_wrapper, self.parser)
+        self.preview_manager = FilePreviewManager(self.wine_wrapper, self.parser)
         
         self.current_directory = None
         self.setup_ui()
@@ -53,10 +54,7 @@ class AssetBrowserTab(QWidget):
         
         # Title
         title_label = QLabel("Asset Browser")
-        title_font = QFont()
-        title_font.setPointSize(20)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
+        title_label.setProperty("header", "h1")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
@@ -69,7 +67,7 @@ class AssetBrowserTab(QWidget):
         self.up_btn.setEnabled(False)
         toolbar_layout.addWidget(self.up_btn)
         
-        # Editable path field (much longer)
+        # Editable path field
         self.path_edit = QLineEdit()
         self.path_edit.setPlaceholderText("Enter path or browse...")
         self.path_edit.returnPressed.connect(self.navigate_to_path)
@@ -111,20 +109,25 @@ class AssetBrowserTab(QWidget):
         self.update_recent_files_combo()
         
         # File type filters (moved underneath)
-        filter_group = QGroupBox("File Type Filters")
+        filter_group = QGroupBox("")
+        #filter_group.setProperty("header", "h3")
         filter_layout = QHBoxLayout(filter_group)
+        #filter_layout.insertSpacing(0, 150)
         
         # Common BG3 file types
         self.filter_checkboxes = {}
         file_types = [
-            ("LSX Files", [".lsx"]),
+            ("All Files", []),
+            ("PAK Files", [".pak"]),
             ("LSF Files", [".lsf"]),
+            ("LSX Files", [".lsx"]),
+            ("LSJ Files", [".lsj"]),
             ("DDS Images", [".dds"]),
+            ("Models", [".gr2"]),
             ("Textures", [".dds", ".png", ".jpg"]),
             ("Audio", [".wem", ".wav"]),
             ("Scripts", [".lua", ".script"]),
             ("Localization", [".loca"]),
-            ("All Files", [])
         ]
         
         for label, extensions in file_types:
@@ -150,7 +153,7 @@ class AssetBrowserTab(QWidget):
         files_header_layout = QHBoxLayout()
         
         tree_label = QLabel("Files")
-        tree_label.setFont(QFont("SF Pro Text", 16, QFont.Weight.Bold))
+        tree_label.setProperty("header", "h2")
         files_header_layout.addWidget(tree_label)
         
         files_header_layout.addStretch()
@@ -212,7 +215,6 @@ class AssetBrowserTab(QWidget):
         splitter.addWidget(tree_frame)
         
         # Right: Preview pane
-        self.preview_widget = PreviewWidget()
         splitter.addWidget(self.preview_widget)
         
         splitter.setSizes([500, 500])
@@ -549,9 +551,8 @@ class AssetBrowserTab(QWidget):
         file_path = item.data(0, Qt.ItemDataRole.UserRole)
         
         if file_path and file_path != "placeholder" and os.path.isfile(file_path):
-            self.preview_widget.preview_file(file_path, self.preview_manager)
+            self.preview_widget.preview_file(file_path)
         else:
-            print(f"Debug: Not a valid file or is placeholder")
             self.preview_widget.clear_preview()
     
     def filter_files(self):

@@ -23,26 +23,25 @@ class BatchProcessor(QWidget):
     
     def setup_ui(self):
         """Setup batch processing interface"""
+        
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
         layout.setContentsMargins(10, 10, 10, 10)
         
         # Title
         title_label = QLabel("Batch File Processing")
-        title_font = QFont()
-        title_font.setPointSize(16)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
+        title_label.setProperty("header", "h2")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
         # File selection group
         file_group = QGroupBox("File Selection")
+        file_group.setProperty("header", "h3")
         file_layout = QVBoxLayout(file_group)
         
         # File list
         self.file_listbox = QListWidget()
-        self.file_listbox.setMinimumHeight(150)
+        self.file_listbox.setMinimumHeight(200)
         file_layout.addWidget(self.file_listbox)
         
         # File buttons
@@ -71,36 +70,39 @@ class BatchProcessor(QWidget):
         
         # Operations group
         ops_group = QGroupBox("Batch Operations")
+        ops_group.setProperty("header", "h3")
         ops_layout = QVBoxLayout(ops_group)
         
         # Format conversion
-        conv_layout = QHBoxLayout()
-        conv_layout.addWidget(QLabel("Convert to:"))
+        combined_layout = QHBoxLayout()
+        
+        # Convert section
+        combined_layout.addWidget(QLabel("Convert to:"))
         
         self.target_format_combo = QComboBox()
         self.target_format_combo.addItems(["lsx", "lsj", "lsf"])
-        conv_layout.addWidget(self.target_format_combo)
+
+        combined_layout.addWidget(self.target_format_combo)
         
         self.convert_btn = QPushButton("Convert All")
         self.convert_btn.clicked.connect(self.batch_convert)
-        conv_layout.addWidget(self.convert_btn)
+        combined_layout.addWidget(self.convert_btn)
         
-        conv_layout.addStretch()
-        ops_layout.addLayout(conv_layout)
+        # Add some spacing between sections
+        combined_layout.addSpacing(30)
         
-        # Output directory
-        output_layout = QFormLayout()
+        # Output directory section
+        combined_layout.addWidget(QLabel("Output Directory:"))
         
         self.output_dir_edit = QLineEdit()
-        output_dir_layout = QHBoxLayout()
-        output_dir_layout.addWidget(self.output_dir_edit)
+        combined_layout.addWidget(self.output_dir_edit)
         
         self.browse_output_btn = QPushButton("Browse")
         self.browse_output_btn.clicked.connect(self.browse_output_dir)
-        output_dir_layout.addWidget(self.browse_output_btn)
+        combined_layout.addWidget(self.browse_output_btn)
         
-        output_layout.addRow("Output Directory:", output_dir_layout)
-        ops_layout.addLayout(output_layout)
+        combined_layout.addStretch()  # Push everything to the left
+        ops_layout.addLayout(combined_layout)
         
         # Progress
         self.progress_bar = QProgressBar()
@@ -114,6 +116,7 @@ class BatchProcessor(QWidget):
         
         # Results
         results_group = QGroupBox("Results")
+        results_group.setProperty("header", "h3")
         results_layout = QVBoxLayout(results_group)
         
         self.results_text = QTextEdit()

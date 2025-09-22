@@ -40,19 +40,20 @@ class PakToolsTab(QWidget):
     def create_styled_group(self, title, font_size=16):
         """Create a styled QGroupBox with custom font size"""
         group = QGroupBox(title)
-        group.setStyleSheet(f"""
-            QGroupBox {{
-                font-size: {font_size}px;
-                font-weight: bold;
-                margin-top: 10px;
-                padding-top: 20px;
-            }}
-            QGroupBox::title {{
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-            }}
-        """)
+        group.setProperty("header", "h2")
+        # group.setStyleSheet(f"""
+        #     QGroupBox {{
+        #         font-size: {font_size}px;
+        #         font-weight: bold;
+        #         margin-top: 10px;
+        #         padding-top: 20px;
+        #     }}
+        #     QGroupBox::title {{
+        #         subcontrol-origin: margin;
+        #         left: 10px;
+        #         padding: 0 5px 0 5px;
+        #     }}
+        # """)
         return group
 
     def setup_ui(self):
@@ -63,10 +64,7 @@ class PakToolsTab(QWidget):
         
         # Title
         title_label = QLabel("PAK Operations")
-        title_font = QFont()
-        title_font.setPointSize(18)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
+        title_label.setProperty("header", "h1")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         

@@ -394,7 +394,7 @@ QLabel[header="h1"] {
     font-size: 28px;
     font-weight: 700;
     color: #1d1d1f;
-    margin: 20px 0 16px 0;
+    margin: 10px 0 10px 0;
     padding: 0;
 }
 
@@ -456,7 +456,52 @@ QLabel[text-style="body"] {
     margin: 4px 0;
 }
 
+/* Add QGroupBox equivalents */
+QGroupBox[header="h1"] {
+    font-size: 28px;
+    font-weight: 700;
+    color: #1d1d1f;
+    margin: 20px 0 16px 0;
+    padding: 0;
+}
+
+QGroupBox[header="h1"]::title {
+    font-size: 28px;
+    font-weight: 700;
+    color: #1d1d1f;
+}
+
+QGroupBox[header="h2"] {
+    font-size: 22px;
+    font-weight: 600;
+    color: #1d1d1f;
+    margin: 16px 0 12px 0;
+    padding: 0 0;
+}
+
+QGroupBox[header="h2"]::title {
+    font-size: 22px;
+    font-weight: 600;
+    color: #1d1d1f;
+}
+QGroupBox[header="h3"] {
+    font-size: 18px;
+    font-weight: 500;
+    color: #1d1d1f;
+    margin: 16px 0 12px 0;
+    padding: 30px;
+}
+
+QGroupBox[header="h3"]::title {
+    font-size: 18px;
+    font-weight: 500;
+    color: #1d1d1f;
+}
+
+
 /* Special header styling for HBoxLayout scenarios */
+/* group = QGroupBox("example title") */
+/* group.setProperty("header", "h2") */
 QLabel[header-inline="true"] {
     margin: 0 16px 0 0;  /* Right margin only for inline headers */
     padding: 0;
@@ -520,6 +565,8 @@ QLabel[package-description="true"] {
         background-color: #2c2c2e;
         border-color: #48484a;
         color: #f2f2f7;
+        padding: 8px 16px;
+        
     }
     
     QPushButton:hover {

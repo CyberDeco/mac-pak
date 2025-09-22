@@ -13,7 +13,7 @@ class SettingsManager:
     
     def __init__(self):
         # Use QSettings for proper Mac preferences handling
-        self.settings = QSettings("BG3ModToolkit", "BG3MacPakTool")
+        self.settings = QSettings("MacPak", "BG3MacPak")
         self._ensure_defaults()
     
     def _ensure_defaults(self):
@@ -31,7 +31,8 @@ class SettingsManager:
             "storage_mode": "persistent",  # persistent vs temp
             "max_cache_size_gb": 5,
             "auto_cleanup_days": 30,
-            "extracted_files_location": str(Path.home() / "Documents" / "BG3ModToolkit"),
+            "extracted_files_location": str(Path.home() / "Documents" / "MacPak"),
+            "blender_path": self._get_default_blender_path(),
         }
         
         for key, value in defaults.items():
@@ -99,6 +100,20 @@ class SettingsManager:
                             return wine_path
         
         # Development or manual installation - empty default
+        return ""
+
+    def _get_default_blender_path(self):
+        """Get default Blender path"""
+        common_paths = [
+            "/Applications/Blender.app/Contents/MacOS/Blender",
+            "/usr/local/bin/blender",
+            "/opt/homebrew/bin/blender",
+        ]
+        
+        for path in common_paths:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        
         return ""
     
     def get(self, key, default=None):

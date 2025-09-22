@@ -14,7 +14,7 @@ from pathlib import Path
 
 from .wine_environment import WineEnvironmentManager, WineProcessMonitor
 
-from ..data.parsers.larian_parser import *
+from ...data.parsers.larian_parser import *
 
 class WineWrapper:
     """BG3 Mac tool with Wine integration"""

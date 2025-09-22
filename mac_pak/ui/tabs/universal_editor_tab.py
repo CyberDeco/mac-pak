@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget, QLabel, QScrollArea, QFrame
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
@@ -23,10 +23,7 @@ class UniversalEditorTab(QWidget):
         layout.setContentsMargins(15, 15, 15, 15)
         
         title_label = QLabel("LSX Editor and LSF/LSX/LSJ Converter")
-        title_font = QFont()
-        title_font.setPointSize(20)
-        title_font.setBold(True)
-        title_label.setFont(title_font)
+        title_label.setProperty("header", "h1")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
         
@@ -41,17 +38,25 @@ class UniversalEditorTab(QWidget):
         )
         self.tab_widget.addTab(self.editor, "File Editor")
         
-        # Batch Processor tab
+        # Batch Processing tab with scroll area
         self.batch_processor = BatchProcessor(
             parent=self,
             settings_manager=self.settings_manager,
             wine_wrapper=self.wine_wrapper
         )
-        self.tab_widget.addTab(self.batch_processor, "Batch Processing")
+        
+        # Create scroll area for batch processor
+        batch_scroll = QScrollArea()
+        batch_scroll.setWidget(self.batch_processor)
+        batch_scroll.setWidgetResizable(True)  # Important: allows the widget to resize
+        batch_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        batch_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        
+        self.tab_widget.addTab(batch_scroll, "Batch Processing")
         
         layout.addWidget(self.tab_widget)
 
-       # Add a welcome message or recent files when no file is loaded
+    # Add a welcome message or recent files when no file is loaded
     def setup_universal_editor_placeholder(self):
         placeholder_widget = QWidget()
         layout = QVBoxLayout(placeholder_widget)
