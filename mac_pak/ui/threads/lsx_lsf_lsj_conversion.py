@@ -25,21 +25,14 @@ class FileConversionThread(QThread):
             self.progress_updated.emit(20, "Starting conversion...")
             
             if self.source_format == self.target_format:
-                # Just copy the file
                 shutil.copy2(self.source_path, self.target_path)
                 self.conversion_finished.emit(True, {"message": "File copied (same format)"})
                 return
             
             self.progress_updated.emit(40, "Converting file...")
             
-            # Use divine.exe for conversions
-            success, output = self.wine_wrapper.run_divine_command(
-                action="convert-resource",
-                source=self.wine_wrapper.mac_to_wine_path(self.source_path),
-                destination=self.wine_wrapper.mac_to_wine_path(self.target_path),
-                input_format=self.source_format,
-                output_format=self.target_format
-            )
+            # CRITICAL: Add timeout and proper async handling
+            success, output = self._run_conversion_with_timeout()
             
             self.progress_updated.emit(100, "Conversion complete!")
             
@@ -54,6 +47,57 @@ class FileConversionThread(QThread):
             
         except Exception as e:
             self.conversion_finished.emit(False, {"error": str(e)})
+    
+    def _run_conversion_with_timeout(self, timeout_seconds=60):
+        """Run conversion with timeout to prevent freezing"""
+        import subprocess
+        import threading
+        import queue
+        
+        result_queue = queue.Queue()
+        
+        def run_conversion():
+            try:
+                success, output = self.wine_wrapper.run_divine_command(
+                    action="convert-resource",
+                    source=self.wine_wrapper.mac_to_wine_path(self.source_path),
+                    destination=self.wine_wrapper.mac_to_wine_path(self.target_path),
+                    input_format=self.source_format,
+                    output_format=self.target_format
+                )
+                result_queue.put((success, output))
+            except Exception as e:
+                result_queue.put((False, str(e)))
+        
+        # Start conversion in separate thread
+        conversion_thread = threading.Thread(target=run_conversion)
+        conversion_thread.daemon = True
+        conversion_thread.start()
+        
+        # Wait with timeout
+        conversion_thread.join(timeout_seconds)
+        
+        if conversion_thread.is_alive():
+            # Timeout occurred
+            return False, "Conversion timed out"
+        
+        try:
+            return result_queue.get_nowait()
+        except queue.Empty:
+            return False, "No result returned"
+
+    def cancel_operation(self):
+        """Cancel the current conversion operation"""
+        self.requestInterruption()
+        if hasattr(self, 'wine_wrapper') and self.wine_wrapper:
+            # Cancel the wine wrapper operation
+            self.wine_wrapper.cancel_current_operation()
+        
+        # Terminate the thread if it doesn't stop gracefully
+        if self.isRunning():
+            self.terminate()
+            if not self.wait(3000):  # Wait 3 seconds
+                self.quit()
 
 class BatchConversionThread(QThread):
     """Thread for batch conversions"""

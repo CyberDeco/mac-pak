@@ -45,14 +45,6 @@ class ConversionPAKThread(QThread):
             if not self.cancelled:
                 self.progress_updated.emit(percentage, message)
         
-        # # Import conversion classes
-        # try:
-        #     from larian_parser import AutoConversionProcessor
-        # except ImportError:
-        #     # Fall back to regular PAK creation if conversion not available
-        #     self._create_pak_regular()
-        #     return
-        
         # Step 1: Find files needing conversion
         self.progress_updated.emit(5, "Scanning for files needing conversion...")
         processor = AutoConversionProcessor(self.wine_wrapper)
@@ -189,7 +181,7 @@ class DivineOperationThread(QThread):
             if not self.cancelled:
                 self.progress_updated.emit(percentage, message)
         
-        success, output = self.wine_wrapper.extract_pak_with_monitoring(
+        success, output = self.wine_wrapper.pak_ops.extract_pak(
             pak_file, dest_dir, progress_callback
         )
         
@@ -199,80 +191,29 @@ class DivineOperationThread(QThread):
             "pak_file": pak_file,
             "dest_dir": dest_dir
         }
-        
         self.operation_finished.emit(success, result_data)
-
+    
     def _create_pak(self):
-        """Enhanced create PAK with auto-conversion support"""
-        if not self.wine_wrapper:
-            QMessageBox.warning(self, "Error", "Backend not initialized. Please check settings.")
-            return
+        """Create PAK file operation"""
+        source_dir = self.kwargs.get("source_dir")
+        pak_file = self.kwargs.get("pak_file")
         
-        # Select source directory
-        source_dir = QFileDialog.getExistingDirectory(
-            self, "Select Folder to Pack",
-            self.settings_manager.get("working_directory", "")
+        def progress_callback(percentage, message):
+            if not self.cancelled:
+                self.progress_updated.emit(percentage, message)
+        
+        success, output = self.wine_wrapper.pak_ops.create_pak(
+            source_dir, pak_file, progress_callback
         )
         
-        if not source_dir:
-            return
-        
-        self.settings_manager.set("working_directory", source_dir)
-        
-        # Check for auto-conversion files using your existing classes
-        # from larian_parser import AutoConversionProcessor, AutoConversionDialog
-        
-        processor = AutoConversionProcessor(self.wine_wrapper)
-        conversion_files = processor.find_conversion_files(source_dir)
-        total_conversions = sum(len(files) for files in conversion_files.values())
-        
-        # DEBUG: Print what was found
-        print(f"Debug: Scanning directory: {source_dir}")
-        print(f"Debug: Found {total_conversions} files needing conversion:")
-        for conv_type, files in conversion_files.items():
-            if files:
-                print(f"  {conv_type}: {len(files)} files")
-                for file_info in files:
-                    print(f"    - {file_info['relative_path']}")
-        
-        # Show conversion preview if needed
-        if total_conversions > 0:
-            proceed = AutoConversionDialog.show_conversion_preview(self, conversion_files)
-            if not proceed:
-                print("Debug: User cancelled conversion")
-                return
-            print("Debug: User approved conversion - starting enhanced PAK creation")
-            
-            # Continue with PAK creation
-            suggested_name = f"{os.path.basename(source_dir)}.pak"
-            pak_file, _ = QFileDialog.getSaveFileName(
-                self, "Save PAK File As",
-                os.path.join(os.path.dirname(source_dir), suggested_name),
-                "PAK Files (*.pak);;All Files (*)"
-            )
-            
-            if not pak_file:
-                return
-            
-            # Start creation with auto-conversion
-            self.start_pak_operation_with_conversion("create_pak", 
-                                                   source_dir=source_dir, 
-                                                   pak_file=pak_file, 
-                                                   validate=True)
-        else:
-            print("Debug: No conversion files found, proceeding with normal PAK creation")
-            # Normal PAK creation
-            suggested_name = f"{os.path.basename(source_dir)}.pak"
-            pak_file, _ = QFileDialog.getSaveFileName(
-                self, "Save PAK File As",
-                os.path.join(os.path.dirname(source_dir), suggested_name),
-                "PAK Files (*.pak);;All Files (*)"
-            )
-            
-            if not pak_file:
-                return
-            
-            self.start_pak_operation("create_pak", source_dir=source_dir, pak_file=pak_file, validate=True)
+        result_data = {
+            "success": success,
+            "output": output,
+            "source_dir": source_dir,
+            "pak_file": pak_file,
+            "validation": None
+        }
+        self.operation_finished.emit(success, result_data)
     
     def _list_pak(self):
         """List PAK contents operation"""
@@ -280,7 +221,7 @@ class DivineOperationThread(QThread):
         
         self.progress_updated.emit(20, "Reading PAK contents...")
         
-        files = self.wine_wrapper.list_pak_contents(pak_file)
+        files = self.wine_wrapper.pak_ops.list_pak_contents(pak_file)
         
         result_data = {
             "success": len(files) > 0,
@@ -290,7 +231,7 @@ class DivineOperationThread(QThread):
         }
         
         self.progress_updated.emit(100, "Complete!")
-        self.operation_finished.emit(True, result_data)
+        self.operation_finished.emit(len(files) > 0, result_data)
     
     def cancel_operation(self):
         """Cancel the current operation"""

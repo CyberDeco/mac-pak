@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PAK Operations tab UI funcs
+PAK Operations tab UI funcs - Simplified async architecture
 """
 
 import os
@@ -14,7 +14,7 @@ from PyQt6.QtGui import QFont
 
 # Import components with fallbacks
 from ..widgets.pak_tools.drop_label import DropLabel
-from ..threads.pak_operations_thread import DivineOperationThread, ConversionPAKThread, IndividualExtractionThread
+from ..threads.pak_operations_thread import IndividualExtractionThread
 
 from ...data.handlers.pak_operations import PAKOperations, IndividualFileExtractor
 from ..dialogs.file_selection_dialog import FileSelectionDialog
@@ -31,8 +31,9 @@ class PakToolsTab(QWidget):
         self.pak_operations = PAKOperations(wine_wrapper) if PAKOperations and wine_wrapper else None
         self.file_extractor = IndividualFileExtractor(wine_wrapper) if IndividualFileExtractor and wine_wrapper else None
         
-        # Threading attributes
-        self.current_thread = None
+        # Monitor and dialog attributes (no more thread wrapper!)
+        self.current_monitor = None
+        self.current_thread = None  # Only for IndividualExtractionThread
         self.progress_dialog = None
         
         self.setup_ui()
@@ -41,19 +42,6 @@ class PakToolsTab(QWidget):
         """Create a styled QGroupBox with custom font size"""
         group = QGroupBox(title)
         group.setProperty("header", "h2")
-        # group.setStyleSheet(f"""
-        #     QGroupBox {{
-        #         font-size: {font_size}px;
-        #         font-weight: bold;
-        #         margin-top: 10px;
-        #         padding-top: 20px;
-        #     }}
-        #     QGroupBox::title {{
-        #         subcontrol-origin: margin;
-        #         left: 10px;
-        #         padding: 0 5px 0 5px;
-        #     }}
-        # """)
         return group
 
     def setup_ui(self):
@@ -162,6 +150,10 @@ class PakToolsTab(QWidget):
         """Clear the results text area"""
         self.results_text.clear()
 
+    # ========================================================================
+    # INDIVIDUAL FILE EXTRACTION (still uses QThread - has Python logic)
+    # ========================================================================
+    
     def show_individual_extraction_dialog(self):
         """Show individual file extraction dialog"""
         if not self.wine_wrapper:
@@ -192,7 +184,7 @@ class PakToolsTab(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to open file selection dialog: {e}")
 
     def start_individual_extraction(self, pak_file, file_paths, destination):
-        """Start individual file extraction"""
+        """Start individual file extraction (still uses thread - has Python processing)"""
         if not self.file_extractor:
             QMessageBox.warning(self, "Error", "File extractor not available")
             return
@@ -217,43 +209,70 @@ class PakToolsTab(QWidget):
         self.current_thread.extraction_finished.connect(self.on_individual_extraction_finished)
         
         # Handle cancellation
-        self.progress_dialog.canceled.connect(self.cancel_current_operation)
+        self.progress_dialog.canceled.connect(self.cancel_individual_extraction)
         
         self.current_thread.start()
 
     def on_individual_extraction_finished(self, success, result):
         """Handle individual extraction completion"""
+        # Disconnect signals first
+        if self.current_thread:
+            try:
+                self.current_thread.progress_updated.disconnect(self.on_operation_progress)
+                self.current_thread.extraction_finished.disconnect(self.on_individual_extraction_finished)
+            except TypeError:
+                pass
+        
         # Close progress dialog
         if self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
+            try:
+                self.progress_dialog.close()
+            except RuntimeError:
+                pass
+            finally:
+                self.progress_dialog = None
         
         # Re-enable buttons
         self.set_pak_buttons_enabled(True)
         
-        # Clean up thread
+        # Clean up thread properly
         if self.current_thread:
+            if self.current_thread.isRunning():
+                self.current_thread.wait(2000)
             self.current_thread.deleteLater()
             self.current_thread = None
         
+        # Show results
         if success:
             extracted_files = result.get('extracted_files', [])
-            self.add_result_text(f"Successfully extracted {len(extracted_files)} files")
+            self.add_result_text(f"✅ Successfully extracted {len(extracted_files)} files")
             for file_info in extracted_files[:10]:  # Show first 10
                 self.add_result_text(f"  {file_info['source_path']}")
             if len(extracted_files) > 10:
                 self.add_result_text(f"  ... and {len(extracted_files) - 10} more files")
+            self.add_result_text("-" * 60)
         else:
             error = result.get('error', 'Unknown error')
-            self.add_result_text(f"Individual extraction failed: {error}")
+            self.add_result_text(f"❌ Individual extraction failed: {error}")
+            self.add_result_text("-" * 60)
+    
+    def cancel_individual_extraction(self):
+        """Cancel individual extraction thread"""
+        if self.current_thread and self.current_thread.isRunning():
+            self.current_thread.terminate()
+            self.add_result_text("Individual extraction cancelled by user")
+
+    # ========================================================================
+    # DIRECT ASYNC OPERATIONS (no thread wrapper - QProcess is already async!)
+    # ========================================================================
 
     def extract_pak_file(self):
-        """Extract PAK file with progress dialog"""
+        """Extract PAK file with progress dialog - direct async"""
         if not self.wine_wrapper:
             QMessageBox.warning(self, "Error", "Backend not initialized. Please check settings.")
             return
         
-        # Use native Mac file dialog
+        # Select PAK file
         pak_file, _ = QFileDialog.getOpenFileName(
             self, "Select PAK File",
             self.settings_manager.get("working_directory", ""),
@@ -277,11 +296,84 @@ class PakToolsTab(QWidget):
         
         self.settings_manager.set("working_directory", dest_dir)
         
-        # Start threaded extraction
-        self.start_pak_operation("extract_pak", pak_file=pak_file, dest_dir=dest_dir)
+        # Start async operation directly (no thread wrapper!)
+        self._start_extract_pak_async(pak_file, dest_dir)
+    
+    def _start_extract_pak_async(self, pak_file, dest_dir):
+        """Start extraction operation - fully async"""
+        self.set_pak_buttons_enabled(False)
+        
+        # Create custom progress dialog
+        self.progress_dialog = ProgressDialog(
+            self, 
+            message="Extracting PAK...",
+            cancel_text="Cancel",
+            min_val=0,
+            max_val=100
+        )
+        
+        # Optionally set file info
+        self.progress_dialog.set_file_info(pak_file)
+        
+        # Connect canceled signal
+        self.progress_dialog.canceled.connect(self.cancel_current_operation)
+        
+        # Show dialog
+        self.progress_dialog.show()
+        
+        # Start async operation
+        self.current_monitor = self.wine_wrapper.pak_ops.extract_pak_async(pak_file, dest_dir)
+        
+        # Connect signals
+        self.current_monitor.progress_updated.connect(self.on_operation_progress)
+        self.current_monitor.process_finished.connect(
+            lambda success, output: self.on_extract_finished(success, output, pak_file, dest_dir)
+        )
+    
+    def on_extract_finished(self, success, output, pak_file, dest_dir):
+        """Handle extraction completion"""
+        # Disconnect signals FIRST - before closing dialog
+        if self.progress_dialog:
+            try:
+                # Disconnect canceled signal to prevent false "cancelled" message
+                self.progress_dialog.canceled.disconnect(self.cancel_current_operation)
+            except TypeError:
+                pass
+        
+        if self.current_monitor:
+            try:
+                self.current_monitor.progress_updated.disconnect(self.on_operation_progress)
+            except TypeError:
+                pass
+        
+        # NOW close the dialog
+        if self.progress_dialog:
+            try:
+                self.progress_dialog.close()
+            except RuntimeError:
+                pass
+            finally:
+                self.progress_dialog = None
+        
+        # Re-enable buttons
+        self.set_pak_buttons_enabled(True)
+        
+        # Show results
+        if success:
+            pak_name = os.path.basename(pak_file)
+            self.add_result_text(f"✅ Successfully extracted {pak_name} to {dest_dir}")
+            self.add_result_text("-" * 60)
+        else:
+            self.add_result_text(f"❌ Extraction failed: {output}")
+            self.add_result_text("-" * 60)
+        
+        # Cleanup
+        if self.current_monitor:
+            self.current_monitor.deleteLater()
+            self.current_monitor = None
     
     def create_pak_file(self):
-        """Create PAK with auto-conversion support"""
+        """Create PAK - direct async"""
         if not self.wine_wrapper:
             QMessageBox.warning(self, "Error", "Backend not initialized. Please check settings.")
             return
@@ -308,8 +400,74 @@ class PakToolsTab(QWidget):
         if not pak_file:
             return
         
-        # Start threaded creation
-        self.start_pak_operation("create_pak", source_dir=source_dir, pak_file=pak_file, validate=True)
+        # Start async operation
+        self._start_create_pak_async(source_dir, pak_file)
+    
+    def _start_create_pak_async(self, source_dir, pak_file):
+        """Start PAK creation - fully async"""
+        self.set_pak_buttons_enabled(False)
+        
+        # Create custom progress dialog
+        self.progress_dialog = ProgressDialog(
+            self,
+            message="Creating PAK...",
+            cancel_text="Cancel"
+        )
+        
+        self.progress_dialog.canceled.connect(self.cancel_current_operation)
+        self.progress_dialog.show()
+        
+        # Start async operation
+        self.current_monitor = self.wine_wrapper.pak_ops.create_pak_async(source_dir, pak_file)
+        
+        # Connect signals
+        self.current_monitor.progress_updated.connect(self.on_operation_progress)
+        self.current_monitor.process_finished.connect(
+            lambda success, output: self.on_create_finished(success, output, source_dir, pak_file)
+        )
+    
+    def on_create_finished(self, success, output, source_dir, pak_file):
+        """Handle PAK creation completion"""
+        # Disconnect signals FIRST - before closing dialog
+        if self.progress_dialog:
+            try:
+                # Disconnect canceled signal to prevent false "cancelled" message
+                self.progress_dialog.canceled.disconnect(self.cancel_current_operation)
+            except TypeError:
+                pass
+        
+        if self.current_monitor:
+            try:
+                self.current_monitor.progress_updated.disconnect(self.on_operation_progress)
+            except TypeError:
+                pass
+
+        
+        # Close progress dialog
+        if self.progress_dialog:
+            try:
+                self.progress_dialog.close()
+            except RuntimeError:
+                pass
+            finally:
+                self.progress_dialog = None
+        
+        # Re-enable buttons
+        self.set_pak_buttons_enabled(True)
+        
+        # Show results
+        if success:
+            pak_name = os.path.basename(pak_file)
+            self.add_result_text(f"✅ Successfully created {pak_name} from {source_dir}")
+            self.add_result_text("-" * 60)
+        else:
+            self.add_result_text(f"❌ PAK creation failed: {output}")
+            self.add_result_text("-" * 60)
+        
+        # Cleanup
+        if self.current_monitor:
+            self.current_monitor.deleteLater()
+            self.current_monitor = None
     
     def rebuild_pak_file(self):
         """Rebuild PAK from extracted/modified folder"""
@@ -337,11 +495,11 @@ class PakToolsTab(QWidget):
         if not pak_file:
             return
         
-        # Start rebuild operation (same as create_pak)
-        self.start_pak_operation("create_pak", source_dir=source_dir, pak_file=pak_file, validate=True)
+        # Same as create_pak
+        self._start_create_pak_async(source_dir, pak_file)
     
     def list_pak_contents(self):
-        """List PAK file contents"""
+        """List PAK file contents - direct async"""
         if not self.wine_wrapper:
             QMessageBox.warning(self, "Error", "Backend not initialized. Please check settings.")
             return
@@ -358,11 +516,108 @@ class PakToolsTab(QWidget):
         
         self.settings_manager.set("working_directory", os.path.dirname(pak_file))
         
-        # Start threaded listing
-        self.start_pak_operation("list_pak", pak_file=pak_file)
+        # Start async operation
+        self._start_list_pak_async(pak_file)
+    def _start_list_pak_async(self, pak_file):
+        """Start PAK listing - fully async"""
+        self.set_pak_buttons_enabled(False)
+        
+        # Create custom progress dialog
+        self.progress_dialog = ProgressDialog(
+            self,
+            message="Reading PAK contents...",
+            cancel_text="Cancel"
+        )
+        
+        self.progress_dialog.set_file_info(pak_file)
+        self.progress_dialog.canceled.connect(self.cancel_current_operation)
+        self.progress_dialog.show()
+        
+        # Start async operation
+        self.current_monitor = self.wine_wrapper.pak_ops.list_pak_contents_async(pak_file)
+        
+        # Connect signals
+        self.current_monitor.progress_updated.connect(self.on_operation_progress)
+        self.current_monitor.process_finished.connect(
+            lambda success, output: self.on_list_finished(success, output, pak_file)
+        )
+    
+    def on_list_finished(self, success, output, pak_file):
+        """Handle PAK listing completion"""
+        # Disconnect signals FIRST - before closing dialog
+        if self.progress_dialog:
+            try:
+                # Disconnect canceled signal to prevent false "cancelled" message
+                self.progress_dialog.canceled.disconnect(self.cancel_current_operation)
+            except TypeError:
+                pass
+        
+        if self.current_monitor:
+            try:
+                self.current_monitor.progress_updated.disconnect(self.on_operation_progress)
+            except TypeError:
+                pass
+        
+        # Close progress dialog
+        if self.progress_dialog:
+            try:
+                self.progress_dialog.close()
+            except RuntimeError:
+                pass
+            finally:
+                self.progress_dialog = None
+        
+        # Re-enable buttons
+        self.set_pak_buttons_enabled(True)
+        
+        # Parse and display results
+        if success:
+            files = self._parse_pak_listing(output)
+            pak_name = os.path.basename(pak_file)
+            
+            self.add_result_text(f"\n{pak_name} contains {len(files)} files:")
+            self.add_result_text("-" * 60)
+            
+            # Show first 100 files
+            for file_path in files[:100]:
+                self.add_result_text(f"  {file_path}")
+            
+            if len(files) > 100:
+                remaining = len(files) - 100
+                self.add_result_text(f"\n  ... and {remaining} more files")
+            
+            self.add_result_text("-" * 60)
+        else:
+            self.add_result_text(f"❌ Failed to list PAK contents: {output}")
+        
+        # Cleanup
+        if self.current_monitor:
+            self.current_monitor.deleteLater()
+            self.current_monitor = None
+    
+    def _parse_pak_listing(self, output):
+        """Parse divine.exe list output into file paths"""
+        files = []
+        lines = output.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line and not line.startswith('Opening') and not line.startswith('Package') and not line.startswith('Listing'):
+                # Extract file path from divine.exe output
+                parts = line.split()
+                if parts:
+                    path_parts = []
+                    for part in parts:
+                        if part.isdigit():
+                            break
+                        path_parts.append(part)
+                    
+                    if path_parts:
+                        file_path = ' '.join(path_parts)
+                        files.append(file_path)
+        return files
     
     def validate_mod_structure(self):
-        """Validate mod folder structure"""
+        """Validate mod folder structure - runs synchronously (lightweight operation)"""
         if not self.wine_wrapper:
             QMessageBox.warning(self, "Error", "Backend not initialized. Please check settings.")
             return
@@ -382,12 +637,13 @@ class PakToolsTab(QWidget):
         self.add_result_text(f"Validating mod structure: {os.path.basename(mod_dir)}")
         
         try:
+            # This is a lightweight Python operation, no need for async
             validation = self.pak_operations.validate_mod_structure(mod_dir)
             
             if validation['valid']:
-                self.add_result_text("Mod structure is valid!")
+                self.add_result_text("✓ Mod structure is valid!")
             else:
-                self.add_result_text("Mod structure has issues:")
+                self.add_result_text("⚠ Mod structure has issues:")
             
             # Show structure findings
             if validation['structure']:
@@ -409,165 +665,24 @@ class PakToolsTab(QWidget):
         except Exception as e:
             self.add_result_text(f"Validation failed: {e}")
 
-    def start_pak_operation(self, operation_type, **kwargs):
-        """Start a PAK operation in background thread"""
-        # Try DivineOperationThread first, fallback to PAKOperations
-        if DivineOperationThread:
-            self._start_with_divine_thread(operation_type, **kwargs)
-        elif self.pak_operations:
-            self._start_with_pak_operations(operation_type, **kwargs)
-        else:
-            QMessageBox.warning(self, "Error", "No PAK operations available")
-
-    def _start_with_divine_thread(self, operation_type, **kwargs):
-        """Start operation with DivineOperationThread"""
-        self.set_pak_buttons_enabled(False)
-        
-        # Create progress dialog
-        self.progress_dialog = QProgressDialog(f"Starting {operation_type}...", "Cancel", 0, 100, self)
-        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress_dialog.show()
-        
-        # Create and start thread
-        self.current_thread = DivineOperationThread(self.wine_wrapper, operation_type, **kwargs)
-        
-        # Connect signals
-        self.current_thread.progress_updated.connect(self.on_operation_progress)
-        self.current_thread.operation_finished.connect(self.on_operation_completed)
-        
-        # Handle cancellation
-        self.progress_dialog.canceled.connect(self.cancel_current_operation)
-        
-        # Start the operation
-        self.current_thread.start()
-
-    def _start_with_pak_operations(self, operation_type, **kwargs):
-        """Fallback to PAKOperations threaded methods"""
-        self.set_pak_buttons_enabled(False)
-        
-        # Create progress dialog
-        self.progress_dialog = QProgressDialog(f"Starting {operation_type}...", "Cancel", 0, 100, self)
-        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress_dialog.show()
-        
-        # Progress callback
-        def progress_callback(percentage, message):
-            if self.progress_dialog:
-                self.progress_dialog.setValue(percentage)
-                self.progress_dialog.setLabelText(message)
-        
-        # Completion callback
-        def completion_callback(result_data):
-            if self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
-            
-            self.set_pak_buttons_enabled(True)
-            
-            if result_data.get('success', False):
-                self.handle_successful_operation(result_data)
-            else:
-                self.handle_failed_operation(result_data)
-        
-        # Call appropriate PAKOperations method
-        if operation_type == "extract_pak":
-            self.pak_operations.extract_pak_threaded(
-                kwargs['pak_file'], kwargs['dest_dir'], 
-                progress_callback, completion_callback
-            )
-        elif operation_type == "create_pak":
-            self.pak_operations.create_pak_threaded(
-                kwargs['source_dir'], kwargs['pak_file'], 
-                progress_callback, completion_callback, 
-                kwargs.get('validate', True)
-            )
-        elif operation_type == "list_pak":
-            self.pak_operations.list_pak_contents_threaded(
-                kwargs['pak_file'], progress_callback, completion_callback
-            )
+    # ========================================================================
+    # COMMON HANDLERS
+    # ========================================================================
 
     def on_operation_progress(self, percentage, message):
-        """Handle progress updates from operation thread"""
-        if self.progress_dialog:
-            self.progress_dialog.setValue(percentage)
-            self.progress_dialog.setLabelText(message)
-
-    def on_operation_completed(self, success, result_data):
-        """Handle operation completion"""
-        # Close progress dialog
-        if self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
-        
-        # Re-enable buttons
-        self.set_pak_buttons_enabled(True)
-        
-        # Handle results
-        if success:
-            self.handle_successful_operation(result_data)
-        else:
-            self.handle_failed_operation(result_data)
-        
-        # Clean up thread
-        if self.current_thread:
-            self.current_thread.deleteLater()
-            self.current_thread = None
-
-    def handle_successful_operation(self, result_data):
-        """Handle successful operation results"""
-        operation_type = getattr(self.current_thread, 'operation_type', 'unknown') if self.current_thread else 'unknown'
-        
-        if operation_type == "extract_pak":
-            pak_name = os.path.basename(result_data['pak_file'])
-            dest_dir = result_data['dest_dir']
-            self.add_result_text(f"Successfully extracted {pak_name} to {dest_dir}")
-            
-        elif operation_type == "create_pak":
-            pak_name = os.path.basename(result_data['pak_file'])
-            source_dir = result_data['source_dir']
-            self.add_result_text(f"Successfully created {pak_name} from {source_dir}")
-            
-            # Show validation results if available
-            validation = result_data.get('validation')
-            if validation and validation.get('warnings'):
-                self.add_result_text("Validation warnings:")
-                for warning in validation['warnings']:
-                    self.add_result_text(f"  - {warning}")
-            
-        elif operation_type == "list_pak":
-            pak_name = os.path.basename(result_data['pak_file'])
-            file_count = result_data['file_count']
-            self.add_result_text(f"{pak_name} contains {file_count} files:")
-            
-            # Show first 20 files
-            for i, file_info in enumerate(result_data['files'][:20]):
-                if isinstance(file_info, dict):
-                    file_name = file_info.get('name', str(file_info))
-                else:
-                    file_name = str(file_info)
-                self.add_result_text(f"  {file_name}")
-            
-            if len(result_data['files']) > 20:
-                remaining = len(result_data['files']) - 20
-                self.add_result_text(f"  ... and {remaining} more files")
-
-    def handle_failed_operation(self, result_data):
-        """Handle failed operation results"""
-        error = result_data.get('error', result_data.get('output', 'Unknown error'))
-        self.add_result_text(f"Operation failed: {error}")
-        
-        # Show detailed error if available
-        output = result_data.get('output', '')
-        if output and output != error:
-            self.add_result_text(f"Details: {output}")
-
+        """Handle progress updates from async operations"""
+        if self.progress_dialog and not self.progress_dialog.wasCanceled():
+            try:
+                self.progress_dialog.setValue(percentage)
+                self.progress_dialog.setLabelText(message)
+            except RuntimeError:
+                # Dialog was deleted
+                pass
+    
     def cancel_current_operation(self):
-        """Cancel the current operation"""
-        if self.current_thread and self.current_thread.isRunning():
-            if hasattr(self.current_thread, 'cancel_operation'):
-                self.current_thread.cancel_operation()
-            else:
-                self.current_thread.terminate()
+        """Cancel the current async operation"""
+        if self.current_monitor:
+            self.current_monitor.cancel()
             self.add_result_text("Operation cancelled by user")
 
     def handle_dropped_pak(self, pak_file):
@@ -592,10 +707,10 @@ class PakToolsTab(QWidget):
             pak_name = os.path.splitext(os.path.basename(pak_file))[0]
             dest_dir = os.path.join(pak_dir, f"{pak_name}_extracted")
             
-            self.start_pak_operation("extract_pak", pak_file=pak_file, dest_dir=dest_dir)
+            self._start_extract_pak_async(pak_file, dest_dir)
             
         elif msg.clickedButton() == list_btn:
-            self.start_pak_operation("list_pak", pak_file=pak_file)
+            self._start_list_pak_async(pak_file)
 
     def set_pak_buttons_enabled(self, enabled):
         """Enable/disable PAK operation buttons"""
@@ -607,7 +722,7 @@ class PakToolsTab(QWidget):
         self.individual_extract_btn.setEnabled(enabled)
     
     def add_result_text(self, text):
-        """Add text to results area (thread-safe)"""
+        """Add text to results area (thread-safe via Qt's event system)"""
         self.results_text.append(text.rstrip())
         
         # Auto-scroll to bottom

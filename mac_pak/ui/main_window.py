@@ -247,7 +247,7 @@ class MacPakMainWindow(QMainWindow):
             
             if not os.path.exists(divine_path.split(':')[-1]):
                 raise FileNotFoundError(f"Divine.exe not found: {divine_path}")
-            
+
             self.wine_wrapper = WineWrapper(wine_path, divine_path)
             
             self.backend_status.setText("Backend: Initialized")

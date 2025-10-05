@@ -228,6 +228,7 @@ class LSXEditor(QWidget):
                 content += "<!-- It will not be saved until you click 'Save As' -->"
             else:
                 # Read text files directly
+                
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read()
             
@@ -442,6 +443,7 @@ class LSXEditor(QWidget):
         return success
     
     def convert_to_lsx(self):
+        print("DEBUG: convert_to_lsx() called")
         """Convert current file to LSX format"""
         if not self.current_file and not self.has_content():
             QMessageBox.warning(self, "Warning", "No file or content loaded")
@@ -536,8 +538,28 @@ class LSXEditor(QWidget):
             # Determine source file
             source_file = None
             
+            # if self.current_file:
+            #     source_file = self.current_file
+
             if self.current_file:
-                source_file = self.current_file
+                # Copy current file to temp location
+                temp_source_fd, source_file = tempfile.mkstemp(suffix=f".{self.current_format}")
+                try:
+                    if self.current_format == 'lsf':
+                        with open(self.current_file, 'rb') as src:
+                            content = src.read()
+                        with os.fdopen(temp_source_fd, 'wb') as temp_f:
+                            temp_f.write(content)
+                    else:
+                        with open(self.current_file, 'r', encoding='utf-8') as src:
+                            content = src.read()
+                        with os.fdopen(temp_source_fd, 'w', encoding='utf-8') as temp_f:
+                            temp_f.write(content)
+                    self.temp_source_file = source_file
+                except Exception as e:
+                    os.close(temp_source_fd)
+                    raise e
+            
             else:
                 # Create temporary source file from editor content
                 content = self.text_editor.toPlainText()

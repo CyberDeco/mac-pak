@@ -7,151 +7,247 @@ Handles Wine detection, validation, and path management
 import subprocess
 import os
 import sys
-import threading
-import queue
-import time
 from pathlib import Path
 
-class WineProcessMonitor:
-    """Monitor Wine processes with real-time output and cancellation support"""
+from PyQt6.QtCore import QProcess, QProcessEnvironment, QObject, pyqtSignal, QTimer
+
+import logging
+
+# Set up logger at the top of your file
+logger = logging.getLogger(__name__)
+
+class WineProcessMonitor(QObject):
+    """Monitor Wine processes using PyQt6's QProcess - truly asynchronous"""
     
-    def __init__(self):
+    # Signals for process monitoring
+    progress_updated = pyqtSignal(int, str)
+    process_finished = pyqtSignal(bool, str)
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.process = None
-        self.output_queue = queue.Queue()
-        self.error_queue = queue.Queue()
         self.cancelled = False
         self.progress_callback = None
-    
+        self.stdout_data = []
+        self.stderr_data = []
+        self.timeout_timer = None
+
     def run_process(self, cmd, env=None, progress_callback=None):
-        """Run a process with real-time monitoring"""
+        """Run a process synchronously - blocks until complete"""
         self.progress_callback = progress_callback
         self.cancelled = False
+        self.stdout_data = []
+        self.stderr_data = []
         
         try:
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                bufsize=1,
-                universal_newlines=True
-            )
+            self.process = QProcess()
             
-            # Start output monitoring threads
-            stdout_thread = threading.Thread(
-                target=self._monitor_output,
-                args=(self.process.stdout, self.output_queue, "stdout")
-            )
-            stderr_thread = threading.Thread(
-                target=self._monitor_output,
-                args=(self.process.stderr, self.error_queue, "stderr")
-            )
+            # Set up environment
+            if env:
+                process_env = QProcessEnvironment.systemEnvironment()
+                for key, value in env.items():
+                    process_env.insert(key, value)
+                self.process.setProcessEnvironment(process_env)
             
-            stdout_thread.daemon = True
-            stderr_thread.daemon = True
-            stdout_thread.start()
-            stderr_thread.start()
+            # Connect signals
+            self.process.readyReadStandardOutput.connect(self._on_stdout_ready)
+            self.process.readyReadStandardError.connect(self._on_stderr_ready)
             
-            # Monitor progress and handle cancellation
-            return self._monitor_process()
+            if progress_callback:
+                progress_callback(5, "Starting process...")
             
+            # Start the process
+            program = cmd[0]
+            arguments = cmd[1:] if len(cmd) > 1 else []
+            self.process.start(program, arguments)
+            
+            # Wait for finish - blocks but is efficient
+            if not self.process.waitForFinished(120000):  # 2 minutes
+                self.process.kill()
+                return False, "Process timed out"
+            
+            # Get results
+            stdout_text = '\n'.join(self.stdout_data)
+            stderr_text = '\n'.join(self.stderr_data)
+            
+            if self.progress_callback:
+                self.progress_callback(100, "Complete")
+            
+            if self.process.exitCode() == 0:
+                return True, stdout_text
+            else:
+                error_msg = stderr_text if stderr_text else f"Process failed with exit code {self.process.exitCode()}"
+                return False, error_msg
+                
         except Exception as e:
             return False, f"Failed to start process: {e}"
-    
-    def _monitor_output(self, pipe, output_queue, stream_type):
-        """Monitor stdout/stderr in separate thread"""
+
+    def run_process_async(self, cmd, env=None, progress_callback=None):
+        """Run a process asynchronously - returns immediately"""
+        self.progress_callback = progress_callback
+        self.cancelled = False
+        self.stdout_data = []
+        self.stderr_data = []
+        
         try:
-            for line in iter(pipe.readline, ''):
-                if line:
-                    output_queue.put((stream_type, line.strip()))
-        except:
-            pass
-        finally:
-            pipe.close()
+            self.process = QProcess()
+            
+            # Set up environment
+            if env:
+                process_env = QProcessEnvironment.systemEnvironment()
+                for key, value in env.items():
+                    process_env.insert(key, value)
+                self.process.setProcessEnvironment(process_env)
+            
+            # Connect signals for ASYNC operation
+            self.process.started.connect(self._on_process_started)
+            self.process.errorOccurred.connect(self._on_process_error)
+            self.process.finished.connect(self._on_process_finished)
+            self.process.readyReadStandardOutput.connect(self._on_stdout_ready)
+            self.process.readyReadStandardError.connect(self._on_stderr_ready)
+            
+            # Set timeout timer
+            self.timeout_timer = QTimer()
+            self.timeout_timer.timeout.connect(self._on_timeout)
+            self.timeout_timer.start(120000)  # 2 minutes
+            
+            if progress_callback:
+                progress_callback(5, "Starting process...")
+            
+            # Start the process - RETURNS IMMEDIATELY
+            program = cmd[0]
+            arguments = cmd[1:] if len(cmd) > 1 else []
+            self.process.start(program, arguments)
+            
+        except Exception as e:
+            self.process_finished.emit(False, f"Failed to start process: {e}")
     
-    def _monitor_process(self):
-        """Monitor the main process and collect output"""
-        stdout_lines = []
-        stderr_lines = []
+    def _on_process_started(self):
+        """Handle process started"""
+        if self.progress_callback:
+            self.progress_callback(20, "Process started, waiting for completion...")
+    
+    def _on_process_error(self, error):
+        """Handle process errors"""
+        error_msgs = {
+            QProcess.ProcessError.FailedToStart: "Failed to start",
+            QProcess.ProcessError.Crashed: "Process crashed", 
+            QProcess.ProcessError.Timedout: "Process timed out",
+            QProcess.ProcessError.WriteError: "Write error",
+            QProcess.ProcessError.ReadError: "Read error",
+            QProcess.ProcessError.UnknownError: "Unknown error"
+        }
         
-        while self.process.poll() is None:
-            if self.cancelled:
-                self._terminate_process()
-                return False, "Operation cancelled by user"
-            
-            # Collect any new output
-            while not self.output_queue.empty():
-                try:
-                    stream_type, line = self.output_queue.get_nowait()
-                    if stream_type == "stdout":
-                        stdout_lines.append(line)
-                        # Parse progress from Divine.exe output if possible
-                        self._parse_progress(line)
-                    else:
-                        stderr_lines.append(line)
-                except queue.Empty:
-                    break
-            
-            time.sleep(0.1)  # Don't overwhelm the CPU
+        error_msg = error_msgs.get(error, "Unknown error")
+        self.process_finished.emit(False, f"Process error: {error_msg}")
+        self._cleanup()
+    
+    def _on_timeout(self):
+        """Handle process timeout"""
+        if self.process and self.process.state() == QProcess.ProcessState.Running:
+            self.process.kill()
+            self.process_finished.emit(False, "Process timed out")
+        self._cleanup()
+    
+    def _on_process_finished(self, exit_code, exit_status):
+        """Handle process completion - runs in main thread via signal"""
+        self._cleanup_timer()  # Stop timeout timer
         
-        # Collect any remaining output
-        while not self.output_queue.empty():
-            try:
-                stream_type, line = self.output_queue.get_nowait()
-                if stream_type == "stdout":
-                    stdout_lines.append(line)
-                else:
-                    stderr_lines.append(line)
-            except queue.Empty:
-                break
+        stdout_text = '\n'.join(self.stdout_data)
+        stderr_text = '\n'.join(self.stderr_data)
         
-        # Check final result
-        return_code = self.process.returncode
-        stdout_text = '\n'.join(stdout_lines)
-        stderr_text = '\n'.join(stderr_lines)
+        if self.progress_callback:
+            self.progress_callback(100, "Process completed")
         
-        if return_code == 0:
-            return True, stdout_text
+        success = (exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit)
+        
+        if success:
+            self.process_finished.emit(True, stdout_text)
         else:
-            error_msg = stderr_text if stderr_text else "Unknown error"
-            return False, error_msg
+            error_msg = stderr_text if stderr_text else f"Process failed with exit code {exit_code}"
+            self.process_finished.emit(False, error_msg)
+        
+        self._cleanup()
+    
+    def _cleanup(self):
+        """Clean up process and timer"""
+        self._cleanup_timer()
+        if self.process:
+            self.process.deleteLater()
+            self.process = None
+    
+    def _cleanup_timer(self):
+        """Clean up timeout timer"""
+        if self.timeout_timer:
+            self.timeout_timer.stop()
+            self.timeout_timer.deleteLater()
+            self.timeout_timer = None
+    
+    def _on_stdout_ready(self):
+        """Handle stdout data ready"""
+        if self.process:
+            data = self.process.readAllStandardOutput().data().decode('utf-8')
+            lines = data.strip().split('\n')
+            for line in lines:
+                if line.strip():
+                    print(f"DEBUG STDOUT: {line.strip()}")
+                    self.stdout_data.append(line.strip())
+                    self._parse_progress(line.strip())
+                    logger.info(f"Wine: {line.strip()}")
+    
+    def _on_stderr_ready(self):
+        """Handle stderr data ready"""
+        if self.process:
+            data = self.process.readAllStandardError().data().decode('utf-8')
+            lines = data.strip().split('\n')
+            for line in lines:
+                if line.strip():
+                    # Log Wine errors instead of storing them
+                    if "err:" in line.lower() or "fixme:" in line.lower():
+                        logger.warning(f"Wine: {line.strip()}")
+                    print(f"DEBUG STDERR: {line.strip()}")
     
     def _parse_progress(self, line):
         """Parse progress information from Divine.exe output"""
         if self.progress_callback:
-            # Divine.exe doesn't provide detailed progress, but we can infer some
             line_lower = line.lower()
-            if "extracting" in line_lower:
-                self.progress_callback(30, "Extracting files...")
-            elif "creating" in line_lower:
-                self.progress_callback(40, "Creating archive...")
+            
+            # Emit progress based on output patterns
+            if "opening" in line_lower or "reading" in line_lower:
+                self.progress_callback(10, "Opening PAK file...")
+            elif "extracting" in line_lower or "unpacking" in line_lower:
+                self.progress_callback(50, "Extracting files...")
+            elif "creating" in line_lower or "packing" in line_lower:
+                self.progress_callback(50, "Creating archive...")
             elif "processing" in line_lower:
-                self.progress_callback(50, "Processing files...")
-            elif "completed" in line_lower or "success" in line_lower:
+                self.progress_callback(60, "Processing files...")
+            elif "writing" in line_lower:
+                self.progress_callback(70, "Writing files...")
+            elif "completed" in line_lower or "success" in line_lower or "done" in line_lower:
                 self.progress_callback(90, "Nearly complete...")
-    
-    def _terminate_process(self):
-        """Safely terminate the Wine process"""
-        if self.process:
-            try:
-                # Try graceful termination first
-                self.process.terminate()
-                
-                # Wait a bit for graceful shutdown
-                try:
-                    self.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    # Force kill if needed
-                    self.process.kill()
-                    self.process.wait()
-            except:
-                pass
+            else:
+                # For any other output, show intermediate progress
+                # This keeps the dialog responsive even without specific keywords
+                current_value = getattr(self, '_last_progress', 20)
+                if current_value < 80:
+                    self._last_progress = min(current_value + 5, 80)
+                    self.progress_callback(self._last_progress, "Processing...")
     
     def cancel(self):
         """Cancel the running operation"""
         self.cancelled = True
-
+        if self.process and self.process.state() == QProcess.ProcessState.Running:
+            self.process.terminate()
+            
+            # Set a timer to kill if it doesn't terminate
+            QTimer.singleShot(3000, lambda: self._force_kill())
+        
+        self._cleanup()
+    
+    def _force_kill(self):
+        """Force kill if process doesn't terminate gracefully"""
+        if self.process and self.process.state() == QProcess.ProcessState.Running:
+            self.process.kill()
 
 class WineEnvironmentManager:
     """Manage Wine environment and validate setup - App Bundle Compatible"""
