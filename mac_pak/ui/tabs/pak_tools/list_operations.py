@@ -66,6 +66,12 @@ class ListOperations(QObject):
             pass
         
         if self.tab.progress_dialog:
+            # Disconnect cancel signal BEFORE closing to prevent false cancel
+            try:
+                self.tab.progress_dialog.canceled.disconnect(self.cancel_current_operation)
+            except TypeError:
+                pass
+            
             try:
                 self.tab.progress_dialog.close()
             except RuntimeError:
@@ -124,8 +130,7 @@ class ListOperations(QObject):
         """Handle progress updates"""
         if self.tab.progress_dialog and not self.tab.progress_dialog.wasCanceled():
             try:
-                self.tab.progress_dialog.setValue(percentage)
-                self.tab.progress_dialog.setLabelText(message)
+                self.tab.progress_dialog.update_progress(percentage, message)
             except RuntimeError:
                 pass
     

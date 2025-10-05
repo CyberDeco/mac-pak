@@ -31,6 +31,7 @@ class WineProcessMonitor(QObject):
         self.stdout_data = []
         self.stderr_data = []
         self.timeout_timer = None
+        self._last_progress = 20
 
     def run_process(self, cmd, env=None, progress_callback=None):
         """Run a process synchronously - blocks until complete"""
