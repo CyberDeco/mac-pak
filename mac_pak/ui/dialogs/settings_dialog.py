@@ -3,6 +3,7 @@
 Settings Dialog - Updated for Wine Integration
 """
 
+import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QGroupBox, QScrollArea, QWidget,
                             QFrame, QLineEdit, QHBoxLayout, QPushButton, QComboBox, QSpinBox,
                             QFileDialog, QMessageBox, QLabel, QTextEdit)
@@ -16,8 +17,11 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.settings_manager = settings_manager
         self.setWindowTitle("Preferences")
-        self.setFixedSize(900, 600)  # Made slightly larger
+        self.setFixedSize(900, 600)
         self.setModal(True)
+        
+        # Add monitor for async operations
+        self.test_monitor = None
         
         self.setup_ui()
         self.load_current_settings()
@@ -181,7 +185,7 @@ class SettingsDialog(QDialog):
         QTimer.singleShot(100, self.calculate_disk_usage)
     
     def test_wine(self):
-        """Test Wine installation"""
+        """Test Wine installation using WineProcessMonitor"""
         wine_path = self.wine_path_edit.text().strip()
         
         if not wine_path:
@@ -195,25 +199,47 @@ class SettingsDialog(QDialog):
             return
         
         try:
-            # Test Wine with temporary settings
-            from mac_pak.tools.wine_environment import WineEnvironmentManager
+            from mac_pak.tools.wine_environment import WineProcessMonitor
             
-            temp_wine_env = WineEnvironmentManager(wine_path=wine_path)
-            success, message = temp_wine_env.validate_wine_installation()
+            # Show testing status
+            self.wine_status_label.setText("Status: Testing Wine...")
+            self.wine_status_label.setStyleSheet("color: orange;")
             
-            if success:
-                self.wine_status_label.setText(f"Status: {message}")
-                self.wine_status_label.setStyleSheet("color: green;")
-            else:
-                self.wine_status_label.setText(f"Status: {message}")
-                self.wine_status_label.setStyleSheet("color: red;")
-                
+            # Create monitor
+            self.test_monitor = WineProcessMonitor()
+            
+            # Connect signals
+            self.test_monitor.process_finished.connect(self._on_wine_test_finished)
+            
+            # Run wine --version
+            cmd = [wine_path, "--version"]
+            env = os.environ.copy()
+            
+            # Run async
+            self.test_monitor.run_process_async(cmd, env)
+            
         except Exception as e:
-            self.wine_status_label.setText(f"Status: Error testing Wine - {e}")
+            self.wine_status_label.setText(f"Status: Error - {e}")
             self.wine_status_label.setStyleSheet("color: red;")
+
+    def _on_wine_test_finished(self, success, output):
+        """Handle Wine test completion"""
+        if success:
+            # Extract version from output
+            version_line = output.strip().split('\n')[0] if output else "Unknown version"
+            self.wine_status_label.setText(f"Status: ✓ {version_line}")
+            self.wine_status_label.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.wine_status_label.setText(f"Status: ✗ Test failed - {output}")
+            self.wine_status_label.setStyleSheet("color: red;")
+        
+        # Cleanup
+        if self.test_monitor:
+            self.test_monitor.deleteLater()
+            self.test_monitor = None
     
     def test_divine(self):
-        """Test Divine.exe accessibility"""
+        """Test Divine.exe using WineProcessMonitor"""
         divine_path = self.divine_path_edit.text().strip()
         wine_path = self.wine_path_edit.text().strip()
         
@@ -233,35 +259,100 @@ class SettingsDialog(QDialog):
             return
         
         try:
-            # Test Divine.exe through Wine
-            from mac_pak.tools.wine_wrapper import WineWrapper
+            from mac_pak.tools.wine_environment import WineProcessMonitor
+            from mac_pak.ui.dialogs.progress_dialog import ProgressDialog
             
-            # Create temporary wrapper just for testing
-            temp_wrapper = WineWrapper(wine_path=wine_path, lslib_path=divine_path)
-            success, output = temp_wrapper.run_divine_command("help")
+            # Create progress dialog
+            self.divine_progress = ProgressDialog(
+                self,
+                message="Testing Divine.exe...",
+                cancel_text="Cancel"
+            )
+            self.divine_progress.show()
             
-            if success:
-                QMessageBox.information(self, "Test Divine.exe", "Divine.exe is working correctly!")
-            else:
-                QMessageBox.warning(self, "Test Divine.exe", f"Divine.exe test failed:\n{output}")
-                
+            # Create monitor
+            self.test_monitor = WineProcessMonitor()
+            
+            # Connect signals
+            self.test_monitor.progress_updated.connect(self.divine_progress.update_progress)
+            self.test_monitor.process_finished.connect(self._on_divine_test_finished)
+            
+            # Run divine --help
+            cmd = [wine_path, divine_path, "--help"]
+            env = os.environ.copy()
+            
+            # Set wine prefix if available
+            wine_prefix = self.settings_manager.get("wine_prefix")
+            if wine_prefix:
+                env["WINEPREFIX"] = wine_prefix
+            
+            # Run async
+            self.test_monitor.run_process_async(cmd, env, 
+                                                lambda p, m: self.divine_progress.update_progress(p, m))
+            
         except Exception as e:
             QMessageBox.warning(self, "Test Divine.exe", f"Error testing Divine.exe:\n{e}")
+            if hasattr(self, 'divine_progress'):
+                self.divine_progress.close()
+
+    def _on_divine_test_finished(self, success, output):
+        """Handle Divine.exe test completion"""
+        # Close progress dialog
+        if hasattr(self, 'divine_progress'):
+            try:
+                self.divine_progress.close()
+            except:
+                pass
+            delattr(self, 'divine_progress')
+        
+        # Show results
+        if success:
+            # Check if output contains Divine.exe help text (usage, parameters, etc.)
+            output_lower = output.lower()
+            if any(keyword in output_lower for keyword in ["usage:", "loglevel", "--game", "--source", "divine"]):
+                QMessageBox.information(
+                    self, "Test Divine.exe", 
+                    "✓ Divine.exe is working correctly!\n\nDivine.exe responded with help information successfully."
+                )
+            else:
+                QMessageBox.warning(
+                    self, "Test Divine.exe",
+                    f"Divine.exe ran but output is unexpected:\n\n{output[:300]}..."
+                )
+        else:
+            QMessageBox.warning(
+                self, "Test Divine.exe", 
+                f"✗ Divine.exe test failed:\n\n{output[:500]}"
+            )
+        
+        # Cleanup
+        if self.test_monitor:
+            self.test_monitor.deleteLater()
+            self.test_monitor = None
     
     def calculate_disk_usage(self):
         """Calculate current disk usage"""
         try:
             storage_path = Path(self.settings_manager.get("extracted_files_location", ""))
-            if storage_path.exists():
-                total_size = sum(f.stat().st_size for f in storage_path.rglob('*') if f.is_file())
-                size_mb = total_size / (1024 * 1024)
-                
-                if size_mb > 1024:
-                    self.usage_label.setText(f"Current usage: {size_mb/1024:.1f} GB")
-                else:
-                    self.usage_label.setText(f"Current usage: {size_mb:.1f} MB")
+            
+            # Create directory if it doesn't exist
+            if not storage_path.exists():
+                try:
+                    storage_path.mkdir(parents=True, exist_ok=True)
+                    self.usage_label.setText("Current usage: 0 MB (storage created)")
+                except Exception as e:
+                    self.usage_label.setText(f"Storage location not found: {storage_path}")
+                return
+            
+            # Calculate usage
+            total_size = sum(f.stat().st_size for f in storage_path.rglob('*') if f.is_file())
+            size_mb = total_size / (1024 * 1024)
+            
+            if size_mb > 1024:
+                self.usage_label.setText(f"Current usage: {size_mb/1024:.1f} GB")
             else:
-                self.usage_label.setText("Storage location not found")
+                self.usage_label.setText(f"Current usage: {size_mb:.1f} MB")
+                
         except Exception as e:
             self.usage_label.setText(f"Error calculating usage: {e}")
     

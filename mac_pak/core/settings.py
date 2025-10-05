@@ -15,29 +15,48 @@ class SettingsManager:
         # Use QSettings for proper Mac preferences handling
         self.settings = QSettings("MacPak", "BG3MacPak")
         self._ensure_defaults()
-    
+        
     def _ensure_defaults(self):
         """Ensure default settings exist"""
         # Detect if we're in an app bundle for default wine path
         default_wine_path = self._get_default_wine_path()
         default_divine_path = self._get_default_divine_path()
         
+        # Get config directory for database
+        if getattr(sys, 'frozen', False):
+            # In app bundle
+            config_dir = Path(QStandardPaths.writableLocation(QStandardPaths.StandardLocation.AppDataLocation))
+        else:
+            # Development
+            config_dir = Path(__file__).parent.parent / "config"
+        
+        config_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Default storage location
+        default_storage = Path.home() / "Documents" / "MacPak"
+        
         defaults = {
             "working_directory": str(Path.home() / "Desktop"),
             "wine_path": default_wine_path,
             "divine_path": default_divine_path,
+            "wine_prefix": os.getenv("WINE_PREFIX", str(Path.home() / ".wine")),
+            "database_path": str(config_dir / "bg3_file_index.db"),
             "window_geometry": None,
             "recent_files": [],
-            "storage_mode": "persistent",  # persistent vs temp
+            "storage_mode": "persistent",
             "max_cache_size_gb": 5,
             "auto_cleanup_days": 30,
-            "extracted_files_location": str(Path.home() / "Documents" / "MacPak"),
+            "extracted_files_location": str(default_storage),
             "blender_path": self._get_default_blender_path(),
         }
         
         for key, value in defaults.items():
             if not self.settings.contains(key):
                 self.settings.setValue(key, value)
+        
+        # Create storage location if it doesn't exist
+        storage_path = Path(self.get("extracted_files_location"))
+        storage_path.mkdir(parents=True, exist_ok=True)
     
     def _get_default_wine_path(self):
         """Get default wine path based on environment"""
@@ -79,6 +98,8 @@ class SettingsManager:
             if os.path.isfile(path) and os.access(path, os.X_OK):
                 return path
         
+        return ""  # Return empty string if nothing found
+    
     def _get_default_divine_path(self):
         """Get default Divine.exe path based on environment"""
         # Check if we're in an app bundle first

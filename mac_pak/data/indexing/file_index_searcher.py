@@ -23,9 +23,17 @@ from PyQt6.QtGui import QFont, QAction
 class FileIndexer:
     """Handles indexing of PAK files and extracted directories"""
     
-    def __init__(self, wine_wrapper=None):
+    def __init__(self, wine_wrapper=None, settings_manager=None):
         self.wine_wrapper = wine_wrapper
-        self.db_path = "bg3_file_index.db"
+        self.settings_manager = settings_manager
+        
+        # Get database path from settings or use fallback
+        if settings_manager:
+            self.db_path = settings_manager.get("database_path", "bg3_file_index.db")
+        else:
+            # Fallback to default location
+            self.db_path = "bg3_file_index.db"
+        
         self.init_database()
     
     def init_database(self):
@@ -232,8 +240,14 @@ class FileIndexer:
 class IndexSearcher:
     """Handles searching through indexed files"""
     
-    def __init__(self, db_path="bg3_file_index.db"):
-        self.db_path = db_path
+    def __init__(self, db_path=None, settings_manager=None):
+        # Get database path from settings or parameter
+        if db_path:
+            self.db_path = db_path
+        elif settings_manager:
+            self.db_path = settings_manager.get("database_path", "bg3_file_index.db")
+        else:
+            self.db_path = "bg3_file_index.db"
     
     def search_files(self, query, filters=None):
         """

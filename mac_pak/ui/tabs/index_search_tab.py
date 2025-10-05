@@ -18,10 +18,12 @@ class IndexSearchTab(QWidget):
     def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
         
-        self.wine_wrapper = wine_wrapper
         self.settings_manager = settings_manager
-        self.indexer = FileIndexer(wine_wrapper)
-        self.searcher = IndexSearcher()
+        self.wine_wrapper = wine_wrapper
+        
+        # Initialize with settings
+        self.indexer = FileIndexer(wine_wrapper, settings_manager)  # ADD settings_manager
+        self.searcher = IndexSearcher(settings_manager=settings_manager)  # ADD settings_manager
         
         self.setup_ui()
         self.load_initial_data()
