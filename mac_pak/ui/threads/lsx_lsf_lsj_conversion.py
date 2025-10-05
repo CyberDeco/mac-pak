@@ -5,99 +5,89 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from ...data.parsers.larian_parser import ProgressUpdate, ParseResult
 from typing import List
 
-class FileConversionThread(QThread):
-    """Thread for file conversions"""
+# class FileConversionThread(QThread):
+#     """Thread for file conversions - uses async WineProcessMonitor"""
     
-    progress_updated = pyqtSignal(int, str)
-    conversion_finished = pyqtSignal(bool, dict)
+#     progress_updated = pyqtSignal(int, str)
+#     conversion_finished = pyqtSignal(bool, dict)
     
-    def __init__(self, wine_wrapper, source_path, target_path, source_format, target_format):
-        super().__init__()
-        self.wine_wrapper = wine_wrapper
-        self.source_path = source_path
-        self.target_path = target_path
-        self.source_format = source_format
-        self.target_format = target_format
+#     def __init__(self, wine_wrapper, source_path, target_path, source_format, target_format):
+#         super().__init__()
+#         self.wine_wrapper = wine_wrapper
+#         self.source_path = source_path
+#         self.target_path = target_path
+#         self.source_format = source_format
+#         self.target_format = target_format
+#         self.monitor = None
     
-    def run(self):
-        """Run the conversion"""
-        try:
-            self.progress_updated.emit(20, "Starting conversion...")
+#     def run(self):
+#         """Run the conversion using subprocess (thread-safe)"""
+#         try:
+#             self.progress_updated.emit(20, "Starting conversion...")
             
-            if self.source_format == self.target_format:
-                shutil.copy2(self.source_path, self.target_path)
-                self.conversion_finished.emit(True, {"message": "File copied (same format)"})
-                return
+#             if self.source_format == self.target_format:
+#                 shutil.copy2(self.source_path, self.target_path)
+#                 self.conversion_finished.emit(True, {"message": "File copied (same format)"})
+#                 return
             
-            self.progress_updated.emit(40, "Converting file...")
+#             self.progress_updated.emit(40, "Converting file...")
             
-            # CRITICAL: Add timeout and proper async handling
-            success, output = self._run_conversion_with_timeout()
+#             # Use subprocess directly (thread-safe, unlike QProcess from thread)
+#             import subprocess
             
-            self.progress_updated.emit(100, "Conversion complete!")
+#             cmd = [
+#                 self.wine_wrapper.wine_env.wine_path,
+#                 self.wine_wrapper.lslib_path,
+#                 "--action", "convert-resource",
+#                 "--game", "bg3",
+#                 "--source", self.wine_wrapper.mac_to_wine_path(self.source_path),
+#                 "--destination", self.wine_wrapper.mac_to_wine_path(self.target_path)
+#             ]
             
-            result_data = {
-                "success": success,
-                "output": output,
-                "source_path": self.source_path,
-                "target_path": self.target_path
-            }
+#             env = os.environ.copy()
+#             env["WINEPREFIX"] = self.wine_wrapper.wine_env.wine_prefix
             
-            self.conversion_finished.emit(success, result_data)
+#             # Run subprocess - blocks this thread but not UI
+#             result = subprocess.run(
+#                 cmd,
+#                 env=env,
+#                 capture_output=True,
+#                 text=True,
+#                 timeout=120
+#             )
             
-        except Exception as e:
-            self.conversion_finished.emit(False, {"error": str(e)})
-    
-    def _run_conversion_with_timeout(self, timeout_seconds=60):
-        """Run conversion with timeout to prevent freezing"""
-        import subprocess
-        import threading
-        import queue
-        
-        result_queue = queue.Queue()
-        
-        def run_conversion():
-            try:
-                success, output = self.wine_wrapper.run_divine_command(
-                    action="convert-resource",
-                    source=self.wine_wrapper.mac_to_wine_path(self.source_path),
-                    destination=self.wine_wrapper.mac_to_wine_path(self.target_path),
-                    input_format=self.source_format,
-                    output_format=self.target_format
-                )
-                result_queue.put((success, output))
-            except Exception as e:
-                result_queue.put((False, str(e)))
-        
-        # Start conversion in separate thread
-        conversion_thread = threading.Thread(target=run_conversion)
-        conversion_thread.daemon = True
-        conversion_thread.start()
-        
-        # Wait with timeout
-        conversion_thread.join(timeout_seconds)
-        
-        if conversion_thread.is_alive():
-            # Timeout occurred
-            return False, "Conversion timed out"
-        
-        try:
-            return result_queue.get_nowait()
-        except queue.Empty:
-            return False, "No result returned"
+#             success = (result.returncode == 0)
+#             output = result.stdout if result.stdout else result.stderr
+            
+#             self.progress_updated.emit(100, "Conversion complete!")
+            
+#             result_data = {
+#                 "success": success,
+#                 "output": output,
+#                 "source_path": self.source_path,
+#                 "target_path": self.target_path
+#             }
+            
+#             self.conversion_finished.emit(success, result_data)
+            
+#         except subprocess.TimeoutExpired:
+#             self.conversion_finished.emit(False, {"error": "Conversion timed out after 2 minutes"})
+#         except Exception as e:
+#             self.conversion_finished.emit(False, {"error": str(e)})
 
-    def cancel_operation(self):
-        """Cancel the current conversion operation"""
-        self.requestInterruption()
-        if hasattr(self, 'wine_wrapper') and self.wine_wrapper:
-            # Cancel the wine wrapper operation
-            self.wine_wrapper.cancel_current_operation()
+#     def cancel_operation(self):
+#         """Cancel the current conversion operation"""
+#         self.requestInterruption()
+#         if hasattr(self, 'wine_wrapper') and self.wine_wrapper:
+#             # Cancel the wine wrapper operation
+#             self.wine_wrapper.cancel_current_operation()
         
-        # Terminate the thread if it doesn't stop gracefully
-        if self.isRunning():
-            self.terminate()
-            if not self.wait(3000):  # Wait 3 seconds
-                self.quit()
+#         # Terminate the thread if it doesn't stop gracefully
+#         if self.isRunning():
+#             self.terminate()
+#             if not self.wait(3000):  # Wait 3 seconds
+#                 self.quit()
+
 
 class BatchConversionThread(QThread):
     """Thread for batch conversions"""
@@ -130,188 +120,80 @@ class BatchConversionThread(QThread):
                     target_file = os.path.splitext(source_file)[0] + f".{self.target_format}"
                 
                 # Detect source format
-                source_format = self.detect_format(source_file)
+                source_format = self._detect_format(source_file)
                 
-                # Convert
                 if source_format == self.target_format:
-                    import shutil
                     shutil.copy2(source_file, target_file)
-                    success, output = True, "File copied (same format)"
-                else:
-                    success, output = self.wine_wrapper.run_divine_command(
-                        action="convert-resource",
-                        source=self.wine_wrapper.mac_to_wine_path(source_file),
-                        destination=self.wine_wrapper.mac_to_wine_path(target_file),
-                        input_format=source_format,
-                        output_format=self.target_format
-                    )
+                    results.append({
+                        "source": source_file,
+                        "target": target_file,
+                        "success": True,
+                        "message": "File copied (same format)"
+                    })
+                    continue
+                
+                # Use the synchronous binary converter method
+                # Divine.exe auto-detects format from file extensions
+                success, output = self.wine_wrapper.binary_converter.run_divine_command(
+                    action="convert-resource",
+                    source=self.wine_wrapper.mac_to_wine_path(source_file),
+                    destination=self.wine_wrapper.mac_to_wine_path(target_file)
+                )
                 
                 results.append({
-                    'source': source_file,
-                    'target': target_file,
-                    'success': success,
-                    'output': output
+                    "source": source_file,
+                    "target": target_file,
+                    "success": success,
+                    "message": output if not success else "Conversion successful"
                 })
                 
             except Exception as e:
                 results.append({
-                    'source': source_file,
-                    'target': '',
-                    'success': False,
-                    'output': str(e)
+                    "source": source_file,
+                    "target": None,
+                    "success": False,
+                    "message": str(e)
                 })
         
-        self.progress_updated.emit(100, "Batch conversion complete!")
+        self.progress_updated.emit(100, "Batch conversion complete")
         self.conversion_finished.emit(results)
     
-    def detect_format(self, file_path):
+    def _detect_format(self, file_path):
         """Detect file format from extension"""
         ext = os.path.splitext(file_path)[1].lower()
-        format_map = {'.lsx': 'lsx', '.lsj': 'lsj', '.lsf': 'lsf'}
-        return format_map.get(ext, 'lsx')
+        if ext == '.lsx':
+            return 'lsx'
+        elif ext == '.lsf':
+            return 'lsf'
+        elif ext == '.lsj':
+            return 'lsj'
+        else:
+            return 'lsx'  # Default to LSX
+
 
 class BatchParserThread(QThread):
-    """Thread for batch processing multiple files"""
+    """Thread for batch parsing operations"""
     
-    # Signals
-    progress_updated = pyqtSignal(ProgressUpdate)
-    file_completed = pyqtSignal(ParseResult)
-    batch_completed = pyqtSignal(list, list)  # results, errors
+    progress_updated = pyqtSignal(int, str)
+    parse_completed = pyqtSignal(ParseResult)
+    batch_finished = pyqtSignal()
     
-    def __init__(self, parser_instance, file_paths: List[str], max_workers: int = 4):
+    def __init__(self, parser, file_list):
         super().__init__()
-        self.parser = parser_instance
-        self.file_paths = file_paths
-        self.max_workers = max_workers
-        self.should_stop = False
-        self.results = []
-        self.errors = []
-        self._mutex = QMutex()
-        self.completed_counter = ThreadSafeCounter()
+        self.parser = parser
+        self.file_list = file_list
     
     def run(self):
-        """Execute batch parsing in thread pool"""
-        try:
-            total_files = len(self.file_paths)
-            
-            self.progress_updated.emit(ProgressUpdate(
-                current=0, total=total_files,
-                message=f"Starting batch parse of {total_files} files",
-                stage="batch_starting"
-            ))
-            
-            # Use ThreadPoolExecutor for concurrent parsing
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                # Submit all parsing tasks
-                future_to_file = {
-                    executor.submit(self._parse_single_file, file_path): file_path
-                    for file_path in self.file_paths
-                }
-                
-                # Process completed tasks
-                for future in as_completed(future_to_file):
-                    with QMutexLocker(self._mutex):
-                        if self.should_stop:
-                            break
-                    
-                    file_path = future_to_file[future]
-                    
-                    try:
-                        result = future.result()
-                        
-                        if result.success:
-                            self.results.append(result)
-                        else:
-                            self.errors.append(result)
-                        
-                        # Emit individual file completion
-                        self.file_completed.emit(result)
-                        
-                        # Update progress
-                        completed = self.completed_counter.increment()
-                        self.progress_updated.emit(ProgressUpdate(
-                            current=completed, total=total_files,
-                            message=f"Processed {completed}/{total_files}: {os.path.basename(file_path)}",
-                            stage="processing"
-                        ))
-                        
-                    except Exception as e:
-                        error_result = ParseResult(
-                            success=False,
-                            error=f"Future execution error: {str(e)}",
-                            file_path=file_path
-                        )
-                        self.errors.append(error_result)
-                        self.file_completed.emit(error_result)
-            
-            # Emit final completion
-            self.batch_completed.emit(self.results, self.errors)
-            
-            self.progress_updated.emit(ProgressUpdate(
-                current=total_files, total=total_files,
-                message=f"Batch complete: {len(self.results)} successful, {len(self.errors)} errors",
-                stage="completed"
-            ))
-            
-        except Exception as e:
-            logger.error(f"Batch parsing thread error: {e}")
-            self.progress_updated.emit(ProgressUpdate(
-                current=0, total=len(self.file_paths),
-                message="Batch parsing failed",
-                error=str(e)
-            ))
-    
-    def _parse_single_file(self, file_path: str) -> ParseResult:
-        """Parse a single file (called from thread pool)"""
-        start_time = time.time()
+        """Run batch parsing"""
+        total_files = len(self.file_list)
         
-        try:
-            # Check if we should stop
-            with QMutexLocker(self._mutex):
-                if self.should_stop:
-                    return ParseResult(
-                        success=False,
-                        error="Parsing cancelled",
-                        file_path=file_path
-                    )
+        for i, file_path in enumerate(self.file_list):
+            percentage = int(((i + 1) / total_files) * 100)
+            self.progress_updated.emit(percentage, f"Parsing {os.path.basename(file_path)}...")
             
-            # Create a new parser instance for thread safety
-            thread_parser = UniversalBG3Parser()
-            if hasattr(self.parser, 'wine_wrapper'):
-                thread_parser.set_wine_wrapper(self.parser.wine_wrapper)
-            
-            result_data = thread_parser.parse_file(file_path)
-            processing_time = time.time() - start_time
-            
-            if result_data and not isinstance(result_data, str):
-                return ParseResult(
-                    success=True,
-                    data=result_data,
-                    file_path=file_path,
-                    processing_time=processing_time
-                )
-            else:
-                error_msg = result_data if isinstance(result_data, str) else "Unknown parsing error"
-                return ParseResult(
-                    success=False,
-                    error=error_msg,
-                    file_path=file_path,
-                    processing_time=processing_time
-                )
-                
-        except Exception as e:
-            processing_time = time.time() - start_time
-            return ParseResult(
-                success=False,
-                error=f"Exception: {str(e)}",
-                file_path=file_path,
-                processing_time=processing_time
-            )
-    
-    def stop_parsing(self):
-        """Signal the thread to stop processing"""
-        with QMutexLocker(self._mutex):
-            self.should_stop = True
+            # Parse file
+            result = self.parser.parse_file(file_path)
+            self.parse_completed.emit(result)
         
-        # Request thread interruption
-        self.requestInterruption()
+        self.progress_updated.emit(100, "Batch parsing complete")
+        self.batch_finished.emit()

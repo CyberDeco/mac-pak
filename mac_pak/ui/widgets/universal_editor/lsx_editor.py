@@ -11,7 +11,6 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from ....data.parsers.larian_parser import UniversalBG3Parser
-from ...threads.lsx_lsf_lsj_conversion import FileConversionThread
 from ...editors.syntax_highlighter import LSXSyntaxHighlighter
 from ...dialogs.progress_dialog import ProgressDialog
 
@@ -252,7 +251,7 @@ class LSXEditor(QWidget):
             QMessageBox.critical(self, "Error", f"Could not open file: {e}")
     
     def load_lsf_file(self, file_path):
-        """Load LSF file by converting to LSX first"""
+        """Load LSF file by converting to LSX first - ASYNC VERSION"""
         if not self.wine_wrapper:
             QMessageBox.critical(self, "Error", "LSF support requires divine.exe integration")
             return
@@ -261,41 +260,61 @@ class LSXEditor(QWidget):
         self.text_editor.setPlainText("Converting LSF file, please wait...")
         self.text_editor.setEnabled(False)
         
-        # Create conversion thread
+        # Create temp file for conversion
         temp_lsx = file_path + '.temp.lsx'
-        self.lsf_conversion_thread = FileConversionThread(
-            self.wine_wrapper, file_path, temp_lsx, 'lsf', 'lsx'
+        
+        # Start ASYNC conversion
+        self.lsf_load_monitor = self.wine_wrapper.binary_converter.convert_resource_async(
+            file_path, 
+            temp_lsx
         )
-        self.lsf_conversion_thread.conversion_finished.connect(self.lsf_conversion_completed)
-        self.lsf_conversion_thread.start()
+        
+        # Store temp path for cleanup
+        self.lsf_temp_file = temp_lsx
+        
+        # Connect signals
+        self.lsf_load_monitor.process_finished.connect(
+            lambda success, output: self.lsf_load_completed(success, output, temp_lsx)
+        )
     
-    def lsf_conversion_completed(self, success, result_data):
-        """Handle LSF conversion completion"""
+    def lsf_load_completed(self, success, output, temp_lsx):
+        """Handle LSF load conversion completion"""
         self.text_editor.setEnabled(True)
         
-        if success:
-            temp_lsx = result_data.get("target_path")
-            try:
-                if temp_lsx and os.path.exists(temp_lsx):
-                    with open(temp_lsx, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                    
-                    # Add note about LSF conversion
-                    note = "<!-- This LSF file has been converted to LSX for editing -->\n"
-                    self.text_editor.setPlainText(note + content)
-                    
-                    # Clean up
-                    os.remove(temp_lsx)
-                else:
-                    raise Exception("Converted file not found")
-                    
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not load converted LSF file: {e}")
+        try:
+            if success and os.path.exists(temp_lsx):
+                with open(temp_lsx, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Add note about LSF conversion
+                note = "<!-- This LSF file has been converted to LSX for editing -->\n"
+                self.text_editor.setPlainText(note + content)
+                
+                self.status_label.setText(f"Loaded LSF file (converted to LSX for editing)")
+            else:
+                error_msg = output if output else "Conversion failed"
+                QMessageBox.critical(self, "Error", f"Could not convert LSF file: {error_msg}")
                 self.text_editor.setPlainText("")
-        else:
-            error_msg = result_data.get("error", "Conversion failed")
-            QMessageBox.critical(self, "Error", f"Could not convert LSF file: {error_msg}")
+        
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not load converted LSF file: {e}")
             self.text_editor.setPlainText("")
+        
+        finally:
+            # Cleanup temp file
+            try:
+                if os.path.exists(temp_lsx):
+                    os.remove(temp_lsx)
+            except:
+                pass
+            
+            # Cleanup monitor
+            if hasattr(self, 'lsf_load_monitor'):
+                try:
+                    self.lsf_load_monitor.deleteLater()
+                except:
+                    pass
+                self.lsf_load_monitor = None
     
     def save_file(self):
         """Save file with format preservation and game file protection"""
@@ -522,10 +541,16 @@ class LSXEditor(QWidget):
             self.preview_conversion_completed(False, {"error": str(e)}, target_format, temp_output_file)
     
     def perform_threaded_wine_conversion(self, target_format, temp_output_file):
-        """Perform conversion using threaded wine wrapper with progress dialog"""
+        """Perform conversion using ASYNC WineProcessMonitor - NO THREADS"""
         try:
             # Create and show progress dialog
-            self.progress_dialog = ProgressDialog(self, f"Converting to {target_format.upper()}")
+            self.progress_dialog = ProgressDialog(
+                self, 
+                f"Converting to {target_format.upper()}",
+                cancel_text="Cancel",
+                min_val=0,
+                max_val=100
+            )
             
             # Set file info if available
             if self.current_file:
@@ -533,53 +558,65 @@ class LSXEditor(QWidget):
             else:
                 self.progress_dialog.file_info_label.setText("Converting editor content...")
             
+            # Connect cancellation
+            self.progress_dialog.canceled.connect(self.cancel_conversion)
+            
+            # Show dialog
             self.progress_dialog.show()
             
             # Determine source file
-            source_file = None
-            
-            # if self.current_file:
-            #     source_file = self.current_file
-
-            if self.current_file:
-                # Copy current file to temp location
+            # CRITICAL: For LSF files, use the actual file directly!
+            if self.current_file and self.current_format == 'lsf':
+                source_file = self.current_file
+                source_format = self.current_format
+                self.progress_dialog.update_progress(15, "Preparing LSF file...")
+                
+            elif self.current_file:
+                # For text formats, copy to temp
                 temp_source_fd, source_file = tempfile.mkstemp(suffix=f".{self.current_format}")
+                
                 try:
-                    if self.current_format == 'lsf':
-                        with open(self.current_file, 'rb') as src:
-                            content = src.read()
-                        with os.fdopen(temp_source_fd, 'wb') as temp_f:
-                            temp_f.write(content)
-                    else:
-                        with open(self.current_file, 'r', encoding='utf-8') as src:
-                            content = src.read()
-                        with os.fdopen(temp_source_fd, 'w', encoding='utf-8') as temp_f:
-                            temp_f.write(content)
+                    with open(self.current_file, 'r', encoding='utf-8') as src:
+                        content = src.read()
+                    
+                    with os.fdopen(temp_source_fd, 'w', encoding='utf-8') as f:
+                        f.write(content)
+                    
                     self.temp_source_file = source_file
                 except Exception as e:
                     os.close(temp_source_fd)
                     raise e
-            
+                
+                source_format = self.current_format
+                self.progress_dialog.update_progress(15, "Preparing source file...")
+                
             else:
-                # Create temporary source file from editor content
-                content = self.text_editor.toPlainText()
+                # No file - use editor content (text formats only)
+                if self.current_format == 'lsf':
+                    self.progress_dialog.close()
+                    self.conversion_error("Cannot convert LSF from editor content - load a file first")
+                    return
+                
                 temp_source_fd, source_file = tempfile.mkstemp(suffix=f".{self.current_format}")
+                content = self.text_editor.toPlainText()
                 
                 try:
                     with os.fdopen(temp_source_fd, 'w', encoding='utf-8') as f:
                         f.write(content)
-                    # Store temp file for cleanup
                     self.temp_source_file = source_file
                 except Exception as e:
                     os.close(temp_source_fd)
                     raise e
-            
-            # Handle LSJ to LSF conversion (requires intermediate LSX step)
-            if self.current_format == 'lsj' and target_format == 'lsf':
-                self.progress_dialog.update_progress(10, "Converting LSJ to intermediate LSX format...")
                 
-                # First convert LSJ to LSX
+                source_format = self.current_format
+                self.progress_dialog.update_progress(15, "Preparing conversion...")
+            
+            # Handle LSJ to LSF conversion (needs intermediate LSX)
+            if self.current_format == 'lsj' and target_format == 'lsf':
+                self.progress_dialog.update_progress(10, "Converting LSJ to intermediate LSX...")
+                
                 temp_lsx = temp_output_file + '.temp.lsx'
+                
                 if self.current_file:
                     success = self.convert_lsj_to_lsx_content(temp_lsx)
                 else:
@@ -589,54 +626,73 @@ class LSXEditor(QWidget):
                     source_file = temp_lsx
                     source_format = 'lsx'
                     self.temp_intermediate_file = temp_lsx
-                    self.progress_dialog.update_progress(25, "Intermediate LSX created, starting LSF conversion...")
+                    self.progress_dialog.update_progress(25, "Starting LSF conversion...")
                 else:
                     self.progress_dialog.close()
-                    self.conversion_error("Failed to convert LSJ to intermediate LSX format")
+                    self.conversion_error("Failed to convert LSJ to intermediate LSX")
                     return
-            else:
-                source_format = self.current_format
-                self.progress_dialog.update_progress(15, "Preparing conversion...")
             
-            # Create and start conversion thread
-            self.conversion_thread = FileConversionThread(
-                wine_wrapper=self.wine_wrapper,
-                source_path=source_file,
-                target_path=temp_output_file,
-                source_format=source_format,
-                target_format=target_format
+            # Start ASYNC conversion - NO THREAD!
+            self.progress_dialog.update_progress(30, "Starting conversion...")
+            
+            # Use the async method from binary_converter
+            self.conversion_monitor = self.wine_wrapper.binary_converter.convert_resource_async(
+                source_file, 
+                temp_output_file
             )
             
-            # Connect the thread to the progress dialog for cancellation
-            self.progress_dialog.set_operation_thread(self.conversion_thread)
+            # Store for later reference
+            self.conversion_source_file = source_file
+            self.conversion_target_file = temp_output_file
+            self.conversion_target_format = target_format
             
-            # Connect signals
-            self.conversion_thread.progress_updated.connect(self.conversion_progress_updated)
-            self.conversion_thread.conversion_finished.connect(
-                lambda success, result: self.threaded_conversion_completed(
-                    success, result, target_format, temp_output_file
-                )
-            )
-            self.conversion_thread.finished.connect(self.conversion_thread_finished)
-            
-            # Start the conversion
-            self.conversion_thread.start()
-            self.progress_dialog.update_progress(30, "Starting conversion process...")
+            # Connect signals - the monitor will emit when done
+            self.conversion_monitor.progress_updated.connect(self.on_conversion_progress)
+            self.conversion_monitor.process_finished.connect(self.on_conversion_finished)
             
         except Exception as e:
-            if hasattr(self, 'progress_dialog'):
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
                 self.progress_dialog.close()
+                self.progress_dialog = None
             self.conversion_error(f"Failed to start conversion: {e}")
     
-    def conversion_progress_updated(self, progress, message):
-        """Handle conversion progress updates and forward to progress dialog"""
+    def on_conversion_progress(self, percentage, message):
+        """Handle progress updates from async conversion"""
         if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            # Map the conversion progress to dialog progress (30-90% range for conversion)
-            dialog_progress = 30 + int((progress / 100) * 60)
+            # Map to dialog progress (30-90% range)
+            dialog_progress = 30 + int((percentage / 100) * 60)
             self.progress_dialog.update_progress(dialog_progress, message)
     
+    def on_conversion_finished(self, success, output):
+        """Handle async conversion completion"""
+        try:
+            if hasattr(self, 'progress_dialog') and self.progress_dialog:
+                if success:
+                    self.progress_dialog.update_progress(95, "Conversion complete!")
+                else:
+                    self.progress_dialog.update_progress(100, f"Conversion failed")
+            
+            # Prepare result data
+            result_data = {
+                "success": success,
+                "output": output,
+                "source_path": self.conversion_source_file,
+                "target_path": self.conversion_target_file
+            }
+            
+            # Call the existing completion handler
+            self.threaded_conversion_completed(
+                success, 
+                result_data, 
+                self.conversion_target_format, 
+                self.conversion_target_file
+            )
+            
+        except Exception as e:
+            self.conversion_error(f"Error handling conversion result: {e}")
+    
     def threaded_conversion_completed(self, success, result_data, target_format, temp_output_file):
-        """Handle threaded conversion completion with progress dialog"""
+        """Handle conversion completion - name kept for compatibility"""
         try:
             if hasattr(self, 'progress_dialog') and self.progress_dialog:
                 if success:
@@ -666,30 +722,62 @@ class LSXEditor(QWidget):
         except Exception as e:
             self.preview_conversion_completed(False, {"error": f"Exception: {str(e)}"}, target_format, temp_output_file)
         finally:
-            # Clean up temporary files
-            self.cleanup_conversion_temps()
-            
-            # Close progress dialog
-            if hasattr(self, 'progress_dialog') and self.progress_dialog:
-                self.progress_dialog.close()
-                self.progress_dialog = None
+            # Cleanup
+            self._cleanup_conversion_dialog_and_monitor()
     
-    def conversion_thread_finished(self):
-        """Handle conversion thread cleanup"""
-        if hasattr(self, 'conversion_thread'):
-            self.conversion_thread.deleteLater()
-            self.conversion_thread = None
-
+    def cancel_conversion(self):
+        """Cancel ongoing conversion - ASYNC version"""
+        if hasattr(self, 'conversion_monitor') and self.conversion_monitor:
+            self.conversion_monitor.cancel()
+            self.status_label.setText("Conversion cancelled")
+        
+        # Cleanup
+        self._cleanup_conversion_dialog_and_monitor()
+    
+    def _cleanup_conversion_dialog_and_monitor(self):
+        """Cleanup for async conversion"""
+        # Disconnect signals
+        if hasattr(self, 'conversion_monitor') and self.conversion_monitor:
+            try:
+                self.conversion_monitor.progress_updated.disconnect(self.on_conversion_progress)
+            except TypeError:
+                pass
+            
+            try:
+                self.conversion_monitor.process_finished.disconnect(self.on_conversion_finished)
+            except TypeError:
+                pass
+            
+            try:
+                self.conversion_monitor.deleteLater()
+            except:
+                pass
+            self.conversion_monitor = None
+        
+        # Close progress dialog
+        if hasattr(self, 'progress_dialog') and self.progress_dialog:
+            try:
+                self.progress_dialog.canceled.disconnect(self.cancel_conversion)
+            except TypeError:
+                pass
+            
+            try:
+                self.progress_dialog.close()
+            except RuntimeError:
+                pass
+            finally:
+                self.progress_dialog = None
+        
+        # Cleanup temp files
+        self.cleanup_conversion_temps()
+    
     def conversion_error(self, error_message):
-        """Handle conversion errors and close progress dialog"""
+        """Handle conversion errors - UPDATED for async"""
         QMessageBox.critical(self, "Conversion Failed", f"Error: {error_message}")
         self.status_label.setText("Conversion failed")
-        self.cleanup_conversion_temps()
         
-        # Close progress dialog if open
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
+        # Use cleanup
+        self._cleanup_conversion_dialog_and_monitor()
     
     def cleanup_conversion_temps(self):
         """Clean up temporary files created during conversion"""
@@ -708,23 +796,6 @@ class LSXEditor(QWidget):
             except:
                 pass
             delattr(self, 'temp_intermediate_file')
-
-    def cancel_conversion(self):
-        """Cancel ongoing conversion"""
-        if hasattr(self, 'conversion_thread') and self.conversion_thread and self.conversion_thread.isRunning():
-            self.conversion_thread.terminate()
-            self.conversion_thread.wait(3000)
-            
-            if self.conversion_thread.isRunning():
-                self.conversion_thread.kill()
-            
-            self.status_label.setText("Conversion cancelled")
-            self.cleanup_conversion_temps()
-        
-        # Close progress dialog
-        if hasattr(self, 'progress_dialog') and self.progress_dialog:
-            self.progress_dialog.close()
-            self.progress_dialog = None
         
     def perform_text_conversion(self, target_format, temp_output_file):
         """Perform conversion between text formats (LSX <-> LSJ)"""

@@ -151,6 +151,8 @@ class WineProcessMonitor(QObject):
     
     def _on_process_finished(self, exit_code, exit_status):
         """Handle process completion - runs in main thread via signal"""
+        print(f"DEBUG: Process finished with exit_code={exit_code}, exit_status={exit_status}")
+        
         self._cleanup_timer()  # Stop timeout timer
         
         stdout_text = '\n'.join(self.stdout_data)
@@ -159,12 +161,29 @@ class WineProcessMonitor(QObject):
         if self.progress_callback:
             self.progress_callback(100, "Process completed")
         
-        success = (exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit)
+        # Divine.exe sometimes returns non-zero exit codes even on success
+        # Check for success indicators in the output instead
+        success_indicators = [
+            "wrote resource to",
+            "extracted",
+            "created package",
+            "conversion complete",
+            "successfully",
+        ]
         
-        if success:
+        # Check if operation succeeded based on output
+        output_lower = stdout_text.lower()
+        has_success_indicator = any(indicator in output_lower for indicator in success_indicators)
+        
+        # Consider it successful if:
+        # 1. Exit code is 0 and normal exit, OR
+        # 2. Has success indicator in output (Divine.exe quirk)
+        if (exit_code == 0 and exit_status == QProcess.ExitStatus.NormalExit) or has_success_indicator:
+            print(f"DEBUG: Emitting process_finished(True, ...)")
             self.process_finished.emit(True, stdout_text)
         else:
             error_msg = stderr_text if stderr_text else f"Process failed with exit code {exit_code}"
+            print(f"DEBUG: Emitting process_finished(False, {error_msg})")
             self.process_finished.emit(False, error_msg)
         
         self._cleanup()

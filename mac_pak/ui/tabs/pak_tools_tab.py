@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGroupBox, QPushButton, 
-    QTextEdit, QLabel, QFileDialog, QMessageBox, QDialog, QProgressDialog
+    QTextEdit, QLabel, QFileDialog, QMessageBox, QDialog
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -184,7 +184,7 @@ class PakToolsTab(QWidget):
             QMessageBox.critical(self, "Error", f"Failed to open file selection dialog: {e}")
 
     def start_individual_extraction(self, pak_file, file_paths, destination):
-        """Start individual file extraction (still uses thread - has Python processing)"""
+        """Start individual file extraction - STANDARDIZED to use custom ProgressDialog"""
         if not self.file_extractor:
             QMessageBox.warning(self, "Error", "File extractor not available")
             return
@@ -195,31 +195,50 @@ class PakToolsTab(QWidget):
         
         self.set_pak_buttons_enabled(False)
         
-        # Create progress dialog
-        self.progress_dialog = QProgressDialog("Extracting selected files...", "Cancel", 0, 100, self)
-        self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
-        self.progress_dialog.show()
-        
-        # Start extraction thread
-        self.current_thread = IndividualExtractionThread(
-            self.file_extractor, pak_file, file_paths, destination
+        # Create CUSTOM progress dialog (replacing QProgressDialog)
+        self.progress_dialog = ProgressDialog(
+            self,
+            message="Extracting selected files...",
+            cancel_text="Cancel",
+            min_val=0,
+            max_val=100
         )
         
-        self.current_thread.progress_updated.connect(self.on_operation_progress)
-        self.current_thread.extraction_finished.connect(self.on_individual_extraction_finished)
+        # Set file info
+        self.progress_dialog.set_file_info(pak_file)
         
-        # Handle cancellation
-        self.progress_dialog.canceled.connect(self.cancel_individual_extraction)
+        # Connect canceled signal
+        self.progress_dialog.canceled.connect(self.cancel_current_operation)
         
-        self.current_thread.start()
-
-    def on_individual_extraction_finished(self, success, result):
+        # Show dialog
+        self.progress_dialog.show()
+        
+        # Create and start thread
+        self.extraction_thread = IndividualExtractionThread(
+            self.file_extractor,
+            pak_file,
+            file_paths,
+            destination
+        )
+        
+        # Connect signals - using update_progress() method
+        self.extraction_thread.progress_updated.connect(self.progress_dialog.update_progress)
+        self.extraction_thread.extraction_finished.connect(self.on_individual_extraction_finished)
+        
+        self.extraction_thread.start()
+    
+    def on_individual_extraction_finished(self, success, message):
         """Handle individual extraction completion"""
         # Disconnect signals first
-        if self.current_thread:
+        if self.progress_dialog:
             try:
-                self.current_thread.progress_updated.disconnect(self.on_operation_progress)
-                self.current_thread.extraction_finished.disconnect(self.on_individual_extraction_finished)
+                self.progress_dialog.canceled.disconnect(self.cancel_current_operation)
+            except TypeError:
+                pass
+        
+        if self.extraction_thread:
+            try:
+                self.extraction_thread.progress_updated.disconnect(self.progress_dialog.update_progress)
             except TypeError:
                 pass
         
@@ -235,26 +254,18 @@ class PakToolsTab(QWidget):
         # Re-enable buttons
         self.set_pak_buttons_enabled(True)
         
-        # Clean up thread properly
-        if self.current_thread:
-            if self.current_thread.isRunning():
-                self.current_thread.wait(2000)
-            self.current_thread.deleteLater()
-            self.current_thread = None
-        
         # Show results
         if success:
-            extracted_files = result.get('extracted_files', [])
-            self.add_result_text(f"✅ Successfully extracted {len(extracted_files)} files")
-            for file_info in extracted_files[:10]:  # Show first 10
-                self.add_result_text(f"  {file_info['source_path']}")
-            if len(extracted_files) > 10:
-                self.add_result_text(f"  ... and {len(extracted_files) - 10} more files")
+            self.add_result_text(f"✅ {message}")
             self.add_result_text("-" * 60)
         else:
-            error = result.get('error', 'Unknown error')
-            self.add_result_text(f"❌ Individual extraction failed: {error}")
+            self.add_result_text(f"❌ {message}")
             self.add_result_text("-" * 60)
+        
+        # Cleanup thread
+        if self.extraction_thread:
+            self.extraction_thread.deleteLater()
+            self.extraction_thread = None
     
     def cancel_individual_extraction(self):
         """Cancel individual extraction thread"""
@@ -518,6 +529,7 @@ class PakToolsTab(QWidget):
         
         # Start async operation
         self._start_list_pak_async(pak_file)
+        
     def _start_list_pak_async(self, pak_file):
         """Start PAK listing - fully async"""
         self.set_pak_buttons_enabled(False)

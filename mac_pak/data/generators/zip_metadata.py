@@ -11,6 +11,15 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 
+    QLineEdit, QTextEdit, QPushButton, QLabel, QFileDialog,
+    QGroupBox, QCheckBox, QMessageBox
+)
+
+# Import custom progress dialog
+from ...ui.dialogs.progress_dialog import ProgressDialog
+
 
 class ModMetadataGenerator:
     """Generates metadata files for BG3 mods"""
@@ -33,15 +42,7 @@ class ModMetadataGenerator:
         }
     
     def generate_mod_metadata(self, mod_info):
-        """
-        Generate metadata JSON for mod
-        
-        Args:
-            mod_info: Dict with mod details
-            
-        Returns:
-            dict: Complete metadata structure
-        """
+        """Generate metadata JSON for mod"""
         metadata = self.metadata_template.copy()
         
         mod_entry = {
@@ -56,49 +57,59 @@ class ModMetadataGenerator:
             "Group": mod_info.get("group", str(uuid.uuid4()))
         }
         
-        metadata["Mods"] = [mod_entry]
+        metadata["Mods"][0] = mod_entry
         return metadata
     
-    def extract_mod_info_from_pak(self, pak_path, wine_wrapper=None):
-        """
-        Extract mod information from PAK file structure
+    def extract_mod_info_from_pak(self, pak_file, wine_wrapper=None):
+        """Extract mod information from PAK filename and structure"""
+        pak_name = Path(pak_file).stem
         
-        Args:
-            pak_path: Path to PAK file
-            wine_wrapper: WineWrapper instance for file operations
-            
-        Returns:
-            dict: Extracted mod information
-        """
         mod_info = {
-            "name": Path(pak_path).stem,
-            "folder": Path(pak_path).stem,
+            "name": pak_name,
+            "folder": pak_name,
             "version": "1.0.0",
             "author": "Unknown",
-            "description": f"Mod generated from {Path(pak_path).name}",
+            "description": f"BG3 mod: {pak_name}",
+            "uuid": str(uuid.uuid4()),
+            "created": datetime.now().isoformat(),
+            "dependencies": [],
+            "group": str(uuid.uuid4())
         }
         
-        if wine_wrapper:
-            try:
-                # Try to extract and read meta.lsx if it exists
-                files = wine_wrapper.list_pak_contents(pak_path)
-                
-                # Look for common metadata files
-                for file_info in files:
-                    file_name = file_info if isinstance(file_info, str) else file_info.get('name', '')
-                    
-                    if 'meta.lsx' in file_name.lower():
-                        # Could extract and parse meta.lsx for detailed info
-                        mod_info["description"] = f"Mod with metadata file: {file_name}"
-                        break
-                    elif 'moduletemplate' in file_name.lower():
-                        mod_info["description"] = f"Module template mod: {file_name}"
-                        break
-                        
-            except Exception as e:
-                print(f"Could not extract mod info: {e}")
-        
         return mod_info
+    
+    def _generate_modsettings_lsx(self, mod_info):
+        """Generate basic modsettings.lsx file"""
+        template = f'''<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="331"/>
+    <region id="ModuleSettings">
+        <node id="root">
+            <children>
+                <node id="ModOrder">
+                    <children>
+                        <node id="Module">
+                            <attribute id="UUID" type="FixedString" value="{mod_info['uuid']}"/>
+                        </node>
+                    </children>
+                </node>
+                <node id="Mods">
+                    <children>
+                        <node id="ModuleShortDesc">
+                            <attribute id="Folder" type="LSString" value="{mod_info['folder']}"/>
+                            <attribute id="MD5" type="LSString" value=""/>
+                            <attribute id="Name" type="LSString" value="{mod_info['name']}"/>
+                            <attribute id="UUID" type="FixedString" value="{mod_info['uuid']}"/>
+                            <attribute id="Version64" type="int64" value="36028797018963968"/>
+                        </node>
+                    </children>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>'''
+        return template
+
 
 class ZipGeneratorThread(QThread):
     """Thread for generating ZIP files with metadata"""
@@ -152,7 +163,7 @@ class ZipGeneratorThread(QThread):
                 
                 # Add modsettings.lsx if we have enough info
                 if self.mod_info.get("uuid"):
-                    modsettings = self._generate_modsettings_lsx(self.mod_info)
+                    modsettings = self.metadata_generator._generate_modsettings_lsx(self.mod_info)
                     zipf.writestr("modsettings.lsx", modsettings)
                 
                 self.progress_updated.emit(90, "Finalizing...")
@@ -173,38 +184,7 @@ class ZipGeneratorThread(QThread):
                 "pak_file": self.pak_file
             }
             self.zip_completed.emit(False, error_result)
-    
-    def _generate_modsettings_lsx(self, mod_info):
-        """Generate basic modsettings.lsx file"""
-        template = f'''<?xml version="1.0" encoding="UTF-8"?>
-<save>
-    <version major="4" minor="0" revision="9" build="331"/>
-    <region id="ModuleSettings">
-        <node id="root">
-            <children>
-                <node id="ModOrder">
-                    <children>
-                        <node id="Module">
-                            <attribute id="UUID" type="FixedString" value="{mod_info['uuid']}"/>
-                        </node>
-                    </children>
-                </node>
-                <node id="Mods">
-                    <children>
-                        <node id="ModuleShortDesc">
-                            <attribute id="Folder" type="LSString" value="{mod_info['folder']}"/>
-                            <attribute id="MD5" type="LSString" value=""/>
-                            <attribute id="Name" type="LSString" value="{mod_info['name']}"/>
-                            <attribute id="UUID" type="FixedString" value="{mod_info['uuid']}"/>
-                            <attribute id="Version64" type="int64" value="36028797018963968"/>
-                        </node>
-                    </children>
-                </node>
-            </children>
-        </node>
-    </region>
-</save>'''
-        return template
+
 
 class ZipMetadataWidget:
     """Widget for ZIP generation with metadata input"""
@@ -214,15 +194,10 @@ class ZipMetadataWidget:
         self.wine_wrapper = wine_wrapper
         self.settings_manager = settings_manager
         self.zip_thread = None
+        self.progress_dialog = None
     
     def show_zip_dialog(self, pak_file):
         """Show dialog for ZIP generation with metadata input"""
-        from PyQt6.QtWidgets import (
-            QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 
-            QLineEdit, QTextEdit, QPushButton, QLabel, QFileDialog,
-            QGroupBox, QCheckBox, QSpinBox
-        )
-        
         dialog = QDialog(self.parent)
         dialog.setWindowTitle("Generate Distributable ZIP")
         dialog.setModal(True)
@@ -316,7 +291,6 @@ class ZipMetadataWidget:
             
             output_dir = output_edit.text()
             if not output_dir or not os.path.exists(output_dir):
-                from PyQt6.QtWidgets import QMessageBox
                 QMessageBox.warning(dialog, "Error", "Please select a valid output directory.")
                 return
             
@@ -330,53 +304,93 @@ class ZipMetadataWidget:
         dialog.exec()
     
     def _start_zip_generation(self, pak_file, output_dir, mod_info, parent_dialog):
-        """Start ZIP generation in background thread"""
-        from PyQt6.QtWidgets import QProgressDialog, QPushButton, QMessageBox
+        """Start ZIP generation in background thread - STANDARDIZED with custom ProgressDialog"""
         
-        # Create progress dialog
-        progress = QProgressDialog("Generating ZIP file...", "Cancel", 0, 100, parent_dialog)
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.show()
+        # Create CUSTOM progress dialog (not QProgressDialog!)
+        self.progress_dialog = ProgressDialog(
+            parent_dialog,
+            message="Generating ZIP file...",
+            cancel_text="Cancel",
+            min_val=0,
+            max_val=100
+        )
+        
+        # Set file info
+        self.progress_dialog.set_file_info(pak_file)
+        
+        # Connect cancellation
+        self.progress_dialog.canceled.connect(self._cancel_zip_generation)
+        
+        # Show dialog
+        self.progress_dialog.show()
         
         # Start generation thread
         self.zip_thread = ZipGeneratorThread(pak_file, output_dir, mod_info, self.wine_wrapper)
         
-        def update_progress(percentage, message):
-            progress.setValue(percentage)
-            progress.setLabelText(message)
+        # Connect signals - using update_progress() method
+        self.zip_thread.progress_updated.connect(self.progress_dialog.update_progress)
+        self.zip_thread.zip_completed.connect(
+            lambda success, result: self._on_zip_completed(success, result, parent_dialog)
+        )
         
-        def zip_completed(success, result):
-            progress.close()
-            
-            if success:
-                zip_path = result["zip_path"]
-                size_mb = result["size"] / (1024 * 1024)
-                
-                msg = QMessageBox(parent_dialog)
-                msg.setIcon(QMessageBox.Icon.Information)
-                msg.setWindowTitle("ZIP Generated Successfully")
-                msg.setText(f"Mod ZIP file created successfully!")
-                msg.setInformativeText(
-                    f"File: {Path(zip_path).name}\n"
-                    f"Size: {size_mb:.1f} MB\n"
-                    f"Location: {zip_path}"
-                )
-                msg.exec()
-                
-                parent_dialog.accept()
-            else:
-                error = result.get("error", "Unknown error")
-                QMessageBox.critical(parent_dialog, "ZIP Generation Failed", f"Failed to generate ZIP:\n{error}")
-        
-        self.zip_thread.progress_updated.connect(update_progress)
-        self.zip_thread.zip_completed.connect(zip_completed)
         self.zip_thread.start()
+    
+    def _on_zip_completed(self, success, result, parent_dialog):
+        """Handle ZIP generation completion"""
+        # Disconnect signals first
+        if self.progress_dialog:
+            try:
+                self.progress_dialog.canceled.disconnect(self._cancel_zip_generation)
+            except TypeError:
+                pass
         
-        # Handle cancellation
-        def cancel_generation():
-            if self.zip_thread and self.zip_thread.isRunning():
-                self.zip_thread.terminate()
-                self.zip_thread.wait()
-            progress.close()
+        if self.zip_thread:
+            try:
+                self.zip_thread.progress_updated.disconnect(self.progress_dialog.update_progress)
+            except TypeError:
+                pass
         
-        progress.canceled.connect(cancel_generation)
+        # Close progress dialog
+        if self.progress_dialog:
+            try:
+                self.progress_dialog.close()
+            except RuntimeError:
+                pass
+            finally:
+                self.progress_dialog = None
+        
+        # Show results
+        if success:
+            zip_path = result["zip_path"]
+            size_mb = result["size"] / (1024 * 1024)
+            
+            msg = QMessageBox(parent_dialog)
+            msg.setIcon(QMessageBox.Icon.Information)
+            msg.setWindowTitle("ZIP Generated Successfully")
+            msg.setText(f"Mod ZIP file created successfully!")
+            msg.setInformativeText(
+                f"File: {Path(zip_path).name}\n"
+                f"Size: {size_mb:.1f} MB\n"
+                f"Location: {zip_path}"
+            )
+            msg.exec()
+            
+            parent_dialog.accept()
+        else:
+            error = result.get("error", "Unknown error")
+            QMessageBox.critical(parent_dialog, "ZIP Generation Failed", f"Failed to generate ZIP:\n{error}")
+        
+        # Cleanup thread
+        if self.zip_thread:
+            self.zip_thread.deleteLater()
+            self.zip_thread = None
+    
+    def _cancel_zip_generation(self):
+        """Cancel ZIP generation"""
+        if self.zip_thread and self.zip_thread.isRunning():
+            self.zip_thread.terminate()
+            self.zip_thread.wait()
+        
+        if self.progress_dialog:
+            self.progress_dialog.close()
+            self.progress_dialog = None

@@ -34,8 +34,58 @@ class WineLSTools(BaseWineOperations):
         wine_path = f"Z:{abs_path.replace('/', chr(92))}"
         return wine_path
     
+    # ============================================================================
+    # ASYNC METHODS - Use these for UI operations (non-blocking)
+    # ============================================================================
+    
+    def convert_resource_async(self, source_path, dest_path):
+        """Generic async conversion - detects format from extensions
+        
+        Returns WineProcessMonitor immediately. Connect to:
+        - monitor.progress_updated(int, str) for progress
+        - monitor.process_finished(bool, str) for completion
+        """
+        wine_source_path = self.mac_to_wine_path(source_path)
+        wine_dest_path = self.mac_to_wine_path(dest_path)
+        
+        cmd = [
+            self.wine_env.wine_path,
+            self.lslib_path,
+            "--action", "convert-resource",
+            "--game", "bg3",
+            "--source", wine_source_path,
+            "--destination", wine_dest_path
+        ]
+        
+        env = os.environ.copy()
+        env["WINEPREFIX"] = self.wine_env.wine_prefix
+        
+        # Create monitor and start async
+        self.current_monitor = WineProcessMonitor()
+        self.current_monitor.run_process_async(cmd, env)
+        
+        return self.current_monitor
+    
+    def convert_lsx_to_lsf_async(self, source, lsf_file):
+        """Convert LSX to LSF asynchronously
+        
+        Returns WineProcessMonitor immediately.
+        """
+        return self.convert_resource_async(source, lsf_file)
+    
+    def convert_lsf_to_lsx_async(self, source, lsx_file):
+        """Convert LSF to LSX asynchronously
+        
+        Returns WineProcessMonitor immediately.
+        """
+        return self.convert_resource_async(source, lsx_file)
+    
+    # ============================================================================
+    # SYNCHRONOUS METHODS - Use these for batch/scripting (blocking)
+    # ============================================================================
+    
     def run_divine_command(self, action, source=None, destination=None, progress_callback=None, **kwargs):
-        """Run Divine.exe command specific to binary conversions"""
+        """Run Divine.exe command specific to binary conversions - SYNCHRONOUS"""
         # Build command
         cmd = [self.wine_env.wine_path, self.lslib_path, "--action", action, "--game", "bg3"]
         
@@ -71,7 +121,7 @@ class WineLSTools(BaseWineOperations):
             self.current_monitor.cancel()
     
     def convert_lsx_to_lsf(self, source, lsf_file, is_content=False, progress_callback=None):
-        """Convert LSX file or content to LSF format using divine.exe"""
+        """Convert LSX file or content to LSF format using divine.exe - SYNCHRONOUS"""
         if is_content:
             # Create temporary file from content
             temp_fd, temp_lsx_file = tempfile.mkstemp(suffix=".lsx")
@@ -93,8 +143,6 @@ class WineLSTools(BaseWineOperations):
                 action="convert-resource",
                 source=wine_lsx_path,
                 destination=wine_lsf_path,
-                input_format="lsx",
-                output_format="lsf",
                 progress_callback=progress_callback
             )
             
@@ -113,7 +161,7 @@ class WineLSTools(BaseWineOperations):
                     pass
     
     def convert_lsf_to_lsx(self, source, lsx_file, is_content=False, progress_callback=None):
-        """Convert LSF file or content to LSX format using divine.exe"""
+        """Convert LSF file or content to LSX format using divine.exe - SYNCHRONOUS"""
         if is_content:
             # Create temporary file from content
             temp_fd, temp_lsf_file = tempfile.mkstemp(suffix=".lsf")
@@ -135,8 +183,6 @@ class WineLSTools(BaseWineOperations):
                 action="convert-resource",
                 source=wine_lsf_path,
                 destination=wine_lsx_path,
-                input_format="lsf",
-                output_format="lsx",
                 progress_callback=progress_callback
             )
             
@@ -155,7 +201,7 @@ class WineLSTools(BaseWineOperations):
                     pass
     
     def batch_convert_lsx_to_lsf(self, source_dir, output_dir, progress_callback=None):
-        """Convert multiple LSX files to LSF format"""
+        """Convert multiple LSX files to LSF format - SYNCHRONOUS"""
         lsx_files = []
         for root, dirs, files in os.walk(source_dir):
             for file in files:
@@ -193,7 +239,7 @@ class WineLSTools(BaseWineOperations):
         return successful_conversions == total_files, f"Converted {successful_conversions}/{total_files} files"
     
     def batch_convert_lsf_to_lsx(self, source_dir, output_dir, progress_callback=None):
-        """Convert multiple LSF files to LSX format"""
+        """Convert multiple LSF files to LSX format - SYNCHRONOUS"""
         lsf_files = []
         for root, dirs, files in os.walk(source_dir):
             for file in files:
@@ -245,32 +291,15 @@ class WineLSTools(BaseWineOperations):
                 'likely_format': 'unknown'
             }
             
-            # Check for common Larian file signatures
+            # Check for LSF/LSX signatures
             if header.startswith(b'LSOF') or header.startswith(b'LSFW'):
-                analysis['likely_format'] = 'Larian Binary (LSF)'
-            elif header.startswith(b'<?xml') or b'<save>' in header:
-                analysis['likely_format'] = 'Larian XML (LSX)'
-            elif header.startswith(b'LOCA'):
-                analysis['likely_format'] = 'Larian Localization (LOCA)'
-            elif b'xml' in header.lower() or b'<' in header:
-                analysis['likely_format'] = 'XML-based'
+                analysis['likely_format'] = 'LSF (Larian Binary)'
+            elif b'<?xml' in header[:64] or b'<save' in header[:64]:
+                analysis['likely_format'] = 'LSX (XML)'
+            elif header.startswith(b'LSPK'):
+                analysis['likely_format'] = 'PAK File'
             
             return analysis
             
         except Exception as e:
             return {'file_path': file_path, 'error': str(e)}
-    
-    def convert_with_format_detection(self, source_file, output_file, progress_callback=None):
-        """Convert file with automatic format detection"""
-        analysis = self.analyze_binary_file(source_file)
-        
-        if progress_callback:
-            progress_callback(20, f"Detected format: {analysis.get('likely_format', 'unknown')}")
-        
-        # Determine conversion based on detected format
-        if analysis['likely_format'] == 'Larian Binary (LSF)':
-            return self.convert_lsf_to_lsx(source_file, output_file, progress_callback=progress_callback)
-        elif analysis['likely_format'] == 'Larian XML (LSX)':
-            return self.convert_lsx_to_lsf(source_file, output_file, progress_callback=progress_callback)
-        else:
-            return False, f"Unsupported format: {analysis['likely_format']}"

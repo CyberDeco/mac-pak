@@ -3,7 +3,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from ..editors.syntax_highlighter import LSXSyntaxHighlighter
-from ..threads.lsx_lsf_lsj_conversion import FileConversionThread, BatchConversionThread
+from ..threads.lsx_lsf_lsj_conversion import BatchConversionThread
 from ..widgets.universal_editor.lsx_editor import LSXEditor
 from ..widgets.universal_editor.batch_processor import BatchProcessor
 
