@@ -20,7 +20,7 @@ from ..core.settings import SettingsManager
 from ..core.update_checker import UpdateChecker
 from .dialogs.update_dialog import UpdateDialog
 from ..tools.wine_wrapper import WineWrapper
-from .tabs.pak_tools_tab import PakToolsTab
+from .tabs.pak_tools import PakToolsTab
 from .tabs.assets_browser_tab import AssetBrowserTab
 from .tabs.universal_editor_tab import UniversalEditorTab
 from .tabs.index_search_tab import IndexSearchTab

@@ -4,7 +4,7 @@ For PAK tab drag & drop
 """
 
 from PyQt6.QtWidgets import QLabel
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QDragEnterEvent, QDropEvent
 
 class DropLabel(QLabel):
@@ -12,9 +12,24 @@ class DropLabel(QLabel):
     
     file_dropped = pyqtSignal(str)  # Signal emitted when file is dropped
     
-    def __init__(self, text="", parent=None):
+    def __init__(self, parent=None, text="📦 Drag PAK files here for quick operations"):
         super().__init__(text, parent)
         self.setAcceptDrops(True)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setMinimumHeight(80)
+        self.setStyleSheet("""
+            QLabel {
+                border: 2px dashed #ccc;
+                border-radius: 8px;
+                padding: 20px;
+                background-color: #f9f9f9;
+                color: #666;
+            }
+            QLabel:hover {
+                border-color: #007AFF;
+                background-color: #f0f8ff;
+            }
+        """)
     
     def dragEnterEvent(self, event: QDragEnterEvent):
         """Handle drag enter events"""
