@@ -286,11 +286,24 @@ class LSXEditor(QWidget):
                 with open(temp_lsx, 'r', encoding='utf-8') as f:
                     content = f.read()
                 
-                # Add note about LSF conversion
-                note = "<!-- This LSF file has been converted to LSX for editing -->\n"
-                self.text_editor.setPlainText(note + content)
+                # Set format FIRST (before loading content)
+                self.current_format = 'lsx'
+                self.format_label.setText(f"Format: LSX")
                 
+                # Update syntax highlighter format WITHOUT triggering rehighlight
+                if hasattr(self, 'highlighter') and self.highlighter:
+                    self.highlighter.current_format = 'lsx'
+                
+                # NOW load the content using clear() + insertPlainText() pattern
+                note = "<!-- This LSF file has been converted to LSX for editing -->\n"
+                self.text_editor.clear()
+                self.text_editor.insertPlainText(note + content)
+                
+                # Set remaining file info
+                self.current_file = None
+                self.modified = False
                 self.status_label.setText(f"Loaded LSF file (converted to LSX for editing)")
+                self.update_button_states()
             else:
                 error_msg = output if output else "Conversion failed"
                 QMessageBox.critical(self, "Error", f"Could not convert LSF file: {error_msg}")
@@ -930,7 +943,7 @@ class LSXEditor(QWidget):
         except Exception as e:
             print(f"LSJ to LSX conversion error: {e}")
             return False
-
+            
     def preview_conversion_completed(self, success, result_data, target_format, temp_file_path):
         """Handle completed conversion for preview"""
         try:
@@ -949,12 +962,17 @@ class LSXEditor(QWidget):
                     with open(temp_file_path, 'r', encoding='utf-8') as f:
                         converted_content = f.read()
                 
-                # Update editor with converted content
-                self.text_editor.setPlainText(converted_content)
-                
-                # Update UI to reflect the new format
+                # Update UI to reflect the new format FIRST (before loading content)
                 self.current_format = target_format
                 self.format_label.setText(f"Format: {target_format.upper()} (Preview)")
+                
+                # Update syntax highlighter format WITHOUT triggering rehighlight
+                if hasattr(self, 'highlighter') and self.highlighter and target_format != 'lsf':
+                    self.highlighter.current_format = target_format
+                
+                # NOW load the content using clear() + insertPlainText() pattern
+                self.text_editor.clear()
+                self.text_editor.insertPlainText(converted_content)
                 
                 if target_format == 'lsf':
                     self.status_label.setText(f"Converted to {target_format.upper()} - binary file ready to save")
@@ -963,10 +981,6 @@ class LSXEditor(QWidget):
                 
                 # Mark as modified so save buttons become available
                 self.modified = True
-                
-                # Update syntax highlighter for new format (skip for binary files)
-                if hasattr(self, 'highlighter') and self.highlighter and target_format != 'lsf':
-                    self.highlighter.set_format(target_format)
                 
                 # Clear the current_file since this is now a preview of converted content
                 # User will need to Save As to choose where to save it
