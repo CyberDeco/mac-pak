@@ -2,6 +2,9 @@
 """
 LSX Editor - Main widget (refactored)
 Orchestrates file operations, conversions, and UI updates
+Updated with search functionality
+
+Replace: mac_pak/ui/widgets/universal_editor/lsx_editor.py
 """
 
 import os
@@ -20,6 +23,12 @@ class LSXEditor(QWidget):
     
     def __init__(self, parent, settings_manager, wine_wrapper):
         super().__init__(parent)
+        self.setAutoFillBackground(True)
+        palette = self.palette()
+        from PyQt6.QtGui import QColor, QPalette
+        palette.setColor(QPalette.ColorRole.Window, QColor("#e8e8e8"))
+        self.setPalette(palette)
+        
         self.parser = UniversalBG3Parser()
         self.wine_wrapper = wine_wrapper
         self.settings_manager = settings_manager
@@ -50,15 +59,44 @@ class LSXEditor(QWidget):
     
     def setup_layout(self):
         """Setup main layout"""
+        from PyQt6.QtWidgets import QFrame
+        
         layout = QVBoxLayout(self)
-        layout.setSpacing(5)
+        layout.setSpacing(10)
         layout.setContentsMargins(10, 10, 10, 10)
         
-        # Add toolbar
-        layout.addLayout(self.ui.toolbar_layout)
+        # Create toolbar container with rounded white background
+        toolbar_container = QFrame()
+        toolbar_container.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 8px;
+                border: 1px solid #d0d0d0;
+            }
+        """)
+        toolbar_container_layout = QVBoxLayout(toolbar_container)
+        toolbar_container_layout.setContentsMargins(10, 10, 10, 10)
+        toolbar_container_layout.addLayout(self.ui.toolbar_layout)
         
-        # Add text editor
-        layout.addWidget(self.ui.text_editor)
+        layout.addWidget(toolbar_container)
+        
+        # Add search widget (hidden by default)
+        layout.addWidget(self.ui.search_widget)
+        
+        # Create text editor container with rounded white background
+        editor_container = QFrame()
+        editor_container.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border-radius: 8px;
+                border: 1px solid #d0d0d0;
+            }
+        """)
+        editor_container_layout = QVBoxLayout(editor_container)
+        editor_container_layout.setContentsMargins(10, 10, 10, 10)
+        editor_container_layout.addWidget(self.ui.text_editor)
+        
+        layout.addWidget(editor_container)
     
     def connect_signals(self):
         """Connect UI signals to handlers"""
@@ -77,6 +115,9 @@ class LSXEditor(QWidget):
         self.ui.validate_btn.clicked.connect(self.validate_file)
         self.ui.format_btn.clicked.connect(self.format_file)
         
+        # Search
+        self.ui.search_btn.clicked.connect(self.ui.show_search)
+        
         # Text changes
         self.ui.text_editor.textChanged.connect(self.on_text_change)
     
@@ -91,6 +132,9 @@ class LSXEditor(QWidget):
         
         if file_path:
             self.file_handler.load_file(file_path, self.ui)
+            # Update format badge
+            if self.current_format:
+                self.ui.update_format_badge(self.current_format)
     
     def save_file(self):
         """Save current file"""
@@ -188,11 +232,27 @@ class LSXEditor(QWidget):
         has_content = self.has_content()
         has_wine = self.wine_wrapper is not None
         
+        # Check if this is a converted file from LSF (no original file path)
+        is_converted_from_lsf = (not has_file and 
+                                 self.modified and 
+                                 hasattr(self, 'original_file_for_conversion') and 
+                                 self.original_file_for_conversion and 
+                                 self.original_file_for_conversion.lower().endswith('.lsf'))
+        
         # File operations
-        self.ui.save_btn.setEnabled(self.modified)
+        # Gray out "Save" for LSF conversions (no destination file yet)
+        if is_converted_from_lsf:
+            self.ui.save_btn.setEnabled(False)
+            self.ui.save_btn.setToolTip("Cannot save LSF conversion - use 'Save As' instead")
+        else:
+            self.ui.save_btn.setEnabled(self.modified and has_file)
+            self.ui.save_btn.setToolTip("Save file (Cmd+S)")
+        
+        # Always enable "Save As" if there's content
         self.ui.save_as_btn.setEnabled(has_file or self.modified)
         self.ui.validate_btn.setEnabled(has_file or self.modified)
         self.ui.format_btn.setEnabled(has_file or self.modified)
+        self.ui.search_btn.setEnabled(has_file or has_content)
         
         # Conversions (need wine for LSF)
         conversion_enabled = (has_file or has_content) and has_wine

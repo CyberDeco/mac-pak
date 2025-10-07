@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 LSX Converter - Handles format conversions using LSFConversionThread
+Updated to properly handle LSF conversions and Save button states
 """
 
 import os
@@ -78,15 +79,15 @@ class LSXConverter:
         # Disable UI
         ui.set_conversion_state(True)
         
-        # Create and start conversion thread
+        # Create and start conversion thread with CORRECT parameter order
         self.conversion_thread = LSFConversionThread(
-            self.wine_wrapper,
-            'convert',
-            temp_source,
-            self.temp_output_file,
-            source_format,
-            target_format,
-            self.editor
+            self.wine_wrapper,           # 1st: wine_wrapper
+            'convert',                   # 2nd: operation
+            temp_source,                 # 3rd: source_path
+            self.temp_output_file,       # 4th: dest_path
+            source_format,               # 5th: source_format
+            target_format,               # 6th: target_format
+            self.editor                  # 7th: parent
         )
         
         # Connect signals
@@ -152,6 +153,11 @@ class LSXConverter:
                 self._conversion_failed(error, ui)
                 return
             
+            # Store the original file path if converting FROM LSF
+            if self.editor.current_format == 'lsf' and self.editor.current_file:
+                # This is a conversion from an LSF file
+                self.editor.original_file_for_conversion = self.editor.current_file
+            
             # Load converted content
             if target_format == 'lsf':
                 # Binary file - show placeholder
@@ -170,16 +176,25 @@ class LSXConverter:
             
             # Update state
             self.editor.current_format = target_format
-            self.editor.current_file = None  # Now a preview
+            self.editor.current_file = None  # Now a preview, no destination file
             self.editor.modified = True
             
             # Update UI labels
-            ui.format_label.setText(f"Format: {target_format.upper()} (Preview)")
+            if hasattr(ui, 'update_format_badge'):
+                ui.update_format_badge(target_format)
+            else:
+                ui.format_label.setText(f"Format: {target_format.upper()}")
             
             if target_format == 'lsf':
                 ui.status_label.setText(f"Converted to {target_format.upper()} - use Save As to save")
             else:
-                ui.status_label.setText(f"Converted to {target_format.upper()} - use Save/Save As")
+                # Check if converted from LSF
+                if (hasattr(self.editor, 'original_file_for_conversion') and 
+                    self.editor.original_file_for_conversion and 
+                    self.editor.original_file_for_conversion.lower().endswith('.lsf')):
+                    ui.status_label.setText(f"Converted from LSF - use Save As to save")
+                else:
+                    ui.status_label.setText(f"Converted to {target_format.upper()} - use Save/Save As")
             
             # Update syntax highlighter
             if hasattr(ui, 'highlighter') and target_format != 'lsf':
