@@ -114,6 +114,40 @@ class FileTreeWidget(QTreeWidget):
         self.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.customContextMenuRequested.connect(self.show_context_menu)
         self.header().sortIndicatorChanged.connect(self.on_sort_indicator_changed)
+
+    def keyPressEvent(self, event):
+        """Handle key presses for navigation"""
+        from PyQt6.QtCore import Qt
+        
+        # Get current item
+        current = self.currentItem()
+        
+        if event.key() in (Qt.Key.Key_Down, Qt.Key.Key_Up, Qt.Key.Key_PageDown, Qt.Key.Key_PageUp):
+            # Let default navigation happen first
+            super().keyPressEvent(event)
+            
+            # Then emit signal for new selection
+            new_item = self.currentItem()
+            if new_item:
+                file_path = new_item.data(0, Qt.ItemDataRole.UserRole)
+                if file_path and os.path.isfile(file_path):
+                    self.file_selected.emit(file_path)
+            return
+        
+        # Return key - open directory or preview file
+        elif event.key() == Qt.Key.Key_Return:
+            if current:
+                file_path = current.data(0, Qt.ItemDataRole.UserRole)
+                if file_path:
+                    if os.path.isdir(file_path):
+                        self.directory_changed.emit(file_path)
+                    elif os.path.isfile(file_path):
+                        self.file_selected.emit(file_path)
+            event.accept()
+            return
+        
+        # Pass other keys to parent
+        super().keyPressEvent(event)
     
     def on_sort_indicator_changed(self, logical_index, order):
         """Handle sort indicator change"""

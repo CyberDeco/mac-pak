@@ -140,8 +140,8 @@ def get_file_icon(filename: str) -> str:
         
         # Binary Larian formats
         '.lsf': '🔒',
-        '.lsbs': '📦',
-        '.lsbc': '📦',
+        '.lsbs': '📃',
+        '.lsbc': '📃',
         '.lsfx': '✨',
         
         # Media files

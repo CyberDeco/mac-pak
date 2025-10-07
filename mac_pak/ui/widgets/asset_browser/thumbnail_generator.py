@@ -32,7 +32,7 @@ class ThumbnailGenerator:
         file_ext = os.path.splitext(file_path)[1].lower()
         
         # Route to appropriate generator
-        if file_ext == '.dds':
+        if file_ext == '.dds' or '_DDS' in file_path:
             return self.create_dds_thumbnail(file_path, max_size)
         elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.gif']:
             return self.create_image_thumbnail(file_path, max_size)

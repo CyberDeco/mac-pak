@@ -209,6 +209,12 @@ class NavigationBar(QWidget):
             btn.deleteLater()
         self.breadcrumb_buttons.clear()
         
+        # Properly clear all widgets from layout
+        while self.breadcrumb_layout.count() > 0:
+            item = self.breadcrumb_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        
         # Remove stretch
         while self.breadcrumb_layout.count() > 0:
             self.breadcrumb_layout.takeAt(0)
@@ -240,12 +246,13 @@ class NavigationBar(QWidget):
                     icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
             
             # Add separator (skip for first item)
+            # Add separator (skip for first item)
             if i > 0:
-                separator = QLabel(" › ")
+                separator_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay)
+                separator = QLabel()
+                separator.setPixmap(separator_icon.pixmap(12, 12))  # Adjust size as needed
                 separator.setStyleSheet("""
-                    color: #86868b; 
-                    font-size: 24px;
-                    padding: 2px 0px;
+                    padding: 2px 4px;
                     margin-top: 0px;
                     background-color: transparent;
                     border: none;

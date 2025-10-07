@@ -7,7 +7,7 @@ import os
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                             QProgressBar, QTextEdit, QPushButton, QSlider,
                             QApplication, QMessageBox, QScrollArea)
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtGui import QFont, QPixmap, QKeyEvent
 from PyQt6.QtCore import Qt, pyqtSignal
 
 from ...threads.file_preview import FilePreviewThread
@@ -72,9 +72,11 @@ class PreviewWidget(QWidget):
         
         # Ensure proper cleanup when widget is destroyed
         self.destroyed.connect(self._on_widget_destroyed)
-    
+        
     def setup_ui(self):
-        """Setup enhanced preview widget UI"""
+        """Setup enhanced preview widget UI with unified display"""
+        from PyQt6.QtWidgets import QStackedWidget
+        
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -92,22 +94,22 @@ class PreviewWidget(QWidget):
         self.copy_btn = QPushButton("📋 Copy")
         self.copy_btn.setToolTip("Copy preview content to clipboard")
         self.copy_btn.setEnabled(False)
-        self.copy_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #007AFF;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #0051D5;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
+        # self.copy_btn.setStyleSheet("""
+        #     QPushButton {
+        #         background-color: #007AFF;
+        #         color: white;
+        #         border: none;
+        #         border-radius: 6px;
+        #         padding: 6px 12px;
+        #         font-weight: 600;
+        #     }
+        #     QPushButton:hover {
+        #         background-color: #0051D5;
+        #     }
+        #     QPushButton:disabled {
+        #         background-color: #cccccc;
+        #     }
+        # """)
         self.copy_btn.clicked.connect(self.copy_content)
         header_layout.addWidget(self.copy_btn)
         
@@ -117,11 +119,19 @@ class PreviewWidget(QWidget):
         self.progress_bar.setMaximumHeight(20)
         header_layout.addWidget(self.progress_bar)
         
+        # Progress label for detailed status
+        self.progress_label = QLabel("")
+        self.progress_label.setVisible(False)
+        header_layout.addWidget(self.progress_label)
+        
         layout.addLayout(header_layout)
         
-        # Thumbnail area with zoom controls (in scroll area for large images)
-        thumbnail_frame = QWidget()
-        thumbnail_layout = QVBoxLayout(thumbnail_frame)
+        # Create stacked widget for unified display (either thumbnail OR text)
+        self.display_stack = QStackedWidget()
+        
+        # ===== Page 0: Thumbnail/Image View =====
+        thumbnail_page = QWidget()
+        thumbnail_layout = QVBoxLayout(thumbnail_page)
         thumbnail_layout.setContentsMargins(0, 0, 0, 0)
         thumbnail_layout.setSpacing(4)
         
@@ -165,8 +175,7 @@ class PreviewWidget(QWidget):
         # Scrollable thumbnail area
         self.thumbnail_scroll = QScrollArea()
         self.thumbnail_scroll.setWidgetResizable(True)
-        self.thumbnail_scroll.setMinimumHeight(200)
-        self.thumbnail_scroll.setMaximumHeight(400)
+        self.thumbnail_scroll.setMinimumHeight(300)
         self.thumbnail_scroll.setStyleSheet("""
             QScrollArea {
                 border: 1px solid #d0d0d0;
@@ -176,7 +185,7 @@ class PreviewWidget(QWidget):
         """)
         
         self.thumbnail_label = ZoomableImageLabel()
-        self.thumbnail_label.setMinimumHeight(180)
+        self.thumbnail_label.setMinimumHeight(280)
         self.thumbnail_label.setStyleSheet("""
             QLabel {
                 background-color: #f8f8f8;
@@ -185,9 +194,9 @@ class PreviewWidget(QWidget):
         self.thumbnail_scroll.setWidget(self.thumbnail_label)
         
         thumbnail_layout.addWidget(self.thumbnail_scroll)
-        layout.addWidget(thumbnail_frame)
+        self.display_stack.addWidget(thumbnail_page)
         
-        # Content area with better styling
+        # ===== Page 1: Text Content View =====
         self.content_text = QTextEdit()
         self.content_text.setReadOnly(True)
         self.content_text.setFont(QFont("SF Mono", 11))
@@ -199,35 +208,42 @@ class PreviewWidget(QWidget):
                 padding: 8px;
             }
         """)
-        layout.addWidget(self.content_text)
+        self.display_stack.addWidget(self.content_text)
         
-        # Progress label
-        self.progress_label = QLabel("")
-        self.progress_label.setVisible(False)
-        self.progress_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(self.progress_label)
+        # Add the stacked widget to main layout
+        layout.addWidget(self.display_stack)
         
-        # Style zoom buttons
-        button_style = """
-            QPushButton {
-                background-color: white;
-                border: 1px solid #d0d0d0;
-                border-radius: 4px;
-                font-size: 14px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #f0f0f0;
-                border-color: #007AFF;
-            }
-            QPushButton:disabled {
-                background-color: #f5f5f5;
-                color: #cccccc;
-            }
-        """
-        self.zoom_in_btn.setStyleSheet(button_style)
-        self.zoom_out_btn.setStyleSheet(button_style)
-        self.zoom_reset_btn.setStyleSheet(button_style)
+        # Default to text view
+        self.display_stack.setCurrentIndex(1)
+
+    def keyPressEvent(self, event):
+        """Handle key presses for navigation"""
+        
+        # Down key - refresh current file or move to next
+        if event.key() == Qt.Key.Key_Down:
+            if self._current_file_path:
+                # Refresh current preview
+                self.preview_file(self._current_file_path)
+            event.accept()
+            return
+        
+        # Up key - refresh current file or move to previous  
+        elif event.key() == Qt.Key.Key_Up:
+            if self._current_file_path:
+                # Refresh current preview
+                self.preview_file(self._current_file_path)
+            event.accept()
+            return
+        
+        # R key - refresh
+        elif event.key() == Qt.Key.Key_R and event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            if self._current_file_path:
+                self.preview_file(self._current_file_path)
+            event.accept()
+            return
+        
+        # Pass other keys to parent
+        super().keyPressEvent(event)
     
     def preview_file(self, file_path):
         """Start preview for a file"""
@@ -300,23 +316,32 @@ class PreviewWidget(QWidget):
         
         if not preview_data:
             self.content_text.setPlainText("No preview data received")
-            self.thumbnail_label.clear_pixmap()
-            self.thumbnail_label.setText("❌\nNo Data")
+            self.display_stack.setCurrentIndex(1)  # Show text view
             return
         
-        # Display content
-        content = preview_data.get('content', 'No content available')
-        self.content_text.setPlainText(content)
-        self.copy_btn.setEnabled(True)
-        
-        # Handle thumbnail display
+        # Check if we have a thumbnail
         thumbnail = preview_data.get('thumbnail')
+        file_ext = preview_data.get('extension', '').lower()
+        
+        # Decide which view to show
         if thumbnail and isinstance(thumbnail, QPixmap):
+            # Show thumbnail view
+            self.display_stack.setCurrentIndex(0)
             self.thumbnail_label.set_pixmap(thumbnail)
             self.enable_zoom_controls(True)
-        else:
-            # Set appropriate text based on file type
+            self.copy_btn.setEnabled(False)  # Can't copy image
+        elif file_ext in ['.png', '.jpg', '.jpeg', '.bmp', '.dds']:
+            # Image file - try to load or show placeholder
+            self.display_stack.setCurrentIndex(0)
             self._set_default_thumbnail_text(preview_data)
+            self.enable_zoom_controls(False)
+            self.copy_btn.setEnabled(False)
+        else:
+            # Text content - show in text view
+            self.display_stack.setCurrentIndex(1)
+            content = preview_data.get('content', 'No content available')
+            self.content_text.setPlainText(content)
+            self.copy_btn.setEnabled(True)
             self.enable_zoom_controls(False)
     
     def _set_default_thumbnail_text(self, preview_data):
@@ -365,13 +390,13 @@ class PreviewWidget(QWidget):
     
     def clear_preview(self):
         """Clear the preview display"""
-        # Stop any running preview thread
         self._cleanup_thread()
         
         self.file_label.setText("No file selected")
         self.content_text.clear()
         self.thumbnail_label.clear_pixmap()
         self.thumbnail_label.setText("Select a file to preview")
+        self.display_stack.setCurrentIndex(1)  # Default to text view
         self.show_progress(False)
         self._current_file_path = None
         self.copy_btn.setEnabled(False)
