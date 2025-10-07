@@ -60,7 +60,7 @@ class PakToolsTab(QWidget):
         operations_layout.setSpacing(20)
         
         # Extract group
-        extract_group = self.create_styled_group("Extract PAKs")
+        extract_group = self.create_styled_group("")
         extract_layout = QVBoxLayout(extract_group)
         
         self.extract_btn = QPushButton("📦 Extract PAK File")
@@ -78,7 +78,7 @@ class PakToolsTab(QWidget):
         operations_layout.addWidget(extract_group)
         
         # Create group
-        create_group = self.create_styled_group("Create PAKs")
+        create_group = self.create_styled_group("")
         create_layout = QVBoxLayout(create_group)
         
         self.create_btn = QPushButton("🔧 Create PAK from Folder")
@@ -94,6 +94,13 @@ class PakToolsTab(QWidget):
         create_layout.addWidget(self.validate_btn)
         
         operations_layout.addWidget(create_group)
+        
+        drop_group = self.create_styled_group("")
+        drop_layout = QVBoxLayout(drop_group)
+        self.drop_label = DropLabel(self)
+        self.drop_label.file_dropped.connect(self.handle_dropped_pak)
+        drop_layout.addWidget(self.drop_label)
+        operations_layout.addWidget(drop_group)
         
         layout.addLayout(operations_layout)
         
@@ -115,16 +122,6 @@ class PakToolsTab(QWidget):
         results_layout.addWidget(self.results_text)
         
         layout.addWidget(results_group)
-        
-        # Drag and drop area
-        drop_group = self.create_styled_group("Quick Actions")
-        drop_layout = QVBoxLayout(drop_group)
-        
-        self.drop_label = DropLabel(self)
-        self.drop_label.file_dropped.connect(self.handle_dropped_pak)
-        
-        drop_layout.addWidget(self.drop_label)
-        layout.addWidget(drop_group)
     
     def set_pak_buttons_enabled(self, enabled):
         """Enable/disable all operation buttons"""
