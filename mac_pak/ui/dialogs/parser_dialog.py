@@ -12,7 +12,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtCore import Qt
 
 from ...data.larian_parser import ProgressUpdate, ParseResult, ConversionWorker
-from ..threads.lsx_lsf_lsj_conversion  import BatchParserThread
+from ..threads.lsf_conversion  import BatchParserThread
 
 class BatchParsingDialog(QDialog):
     """Dialog for batch parsing operations with threading support"""

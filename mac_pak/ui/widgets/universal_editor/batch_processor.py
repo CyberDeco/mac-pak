@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
-from ...threads.lsx_lsf_lsj_conversion import BatchConversionThread
+from ...threads.lsf_conversion import BatchConversionThread
 
 class BatchProcessor(QWidget):
     """Batch file processing interface"""
