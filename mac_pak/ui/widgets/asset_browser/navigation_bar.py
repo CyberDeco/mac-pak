@@ -1,72 +1,176 @@
 #!/usr/bin/env python3
 """
-Navigation bar widget for the asset browser - handles path navigation and recent folders
+Enhanced navigation bar with breadcrumb navigation
 """
 
 import os
 from pathlib import Path
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QPushButton, QLineEdit, QComboBox, QLabel, QFileDialog, QMessageBox
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton, 
+                            QLineEdit, QComboBox, QLabel, QFileDialog, 
+                            QMessageBox, QScrollArea, QFrame)
+from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtGui import QIcon
+
+
+class BreadcrumbButton(QPushButton):
+    """Custom button for breadcrumb navigation"""
+    
+    clicked_with_path = pyqtSignal(str)
+    
+    def __init__(self, text, path, parent=None):
+        super().__init__(text, parent)
+        self.path = path
+        self.setFlat(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                border: none;
+                color: #007AFF;
+                font-weight: 500;
+                font-size: 13px;
+                padding: 6px 10px;
+                text-align: left;
+                min-height: 28px;
+            }
+            QPushButton:hover {
+                background-color: #E5F1FB;
+                border-radius: 6px;
+            }
+            QPushButton:pressed {
+                background-color: #D0E7F7;
+            }
+        """)
+        self.clicked.connect(lambda: self.clicked_with_path.emit(self.path))
 
 
 class NavigationBar(QWidget):
-    """Navigation toolbar for browsing directories"""
+    """Enhanced navigation toolbar with breadcrumb navigation"""
     
     # Signals
-    directory_changed = pyqtSignal(str)  # Emits when directory changes
-    refresh_requested = pyqtSignal()  # Emits when refresh is clicked
-    clear_cache_requested = pyqtSignal()  # Emits when clear cache is clicked
+    directory_changed = pyqtSignal(str)
+    refresh_requested = pyqtSignal()
+    clear_cache_requested = pyqtSignal()
     
     def __init__(self, parent=None, settings_manager=None):
         super().__init__(parent)
         
         self.settings_manager = settings_manager
         self.current_directory = None
+        self.breadcrumb_buttons = []
         
         self.setup_ui()
         self.connect_signals()
+        
+        # Enable drag and drop
+        self.setAcceptDrops(True)
         
         # Load recent folders if available
         if settings_manager:
             self.update_recent_folders()
     
     def setup_ui(self):
-        """Setup navigation bar UI"""
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        """Setup enhanced navigation bar UI"""
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(8)
         
-        # Up button
+        # Top row: Main controls
+        top_layout = QHBoxLayout()
+        top_layout.setSpacing(10)
+        
+        # Up button with icon
         self.up_btn = QPushButton("↑ Up")
         self.up_btn.setEnabled(False)
-        layout.addWidget(self.up_btn)
+        self.up_btn.setToolTip("Go to parent directory")
+        top_layout.addWidget(self.up_btn)
         
         # Path edit field
         self.path_edit = QLineEdit()
-        self.path_edit.setPlaceholderText("Enter path or browse...")
-        layout.addWidget(self.path_edit, 1)
+        self.path_edit.setPlaceholderText("Enter path, drag folder here, or browse...")
+        top_layout.addWidget(self.path_edit, 1)
         
-        # Browse button
-        self.browse_btn = QPushButton("Browse")
-        layout.addWidget(self.browse_btn)
+        # Browse button with icon
+        self.browse_btn = QPushButton("📁 Browse")
+        self.browse_btn.setToolTip("Browse for a folder")
+        top_layout.addWidget(self.browse_btn)
         
-        # Refresh button
-        self.refresh_btn = QPushButton("Refresh")
-        layout.addWidget(self.refresh_btn)
+        # Refresh button with icon
+        self.refresh_btn = QPushButton("🔄 Refresh")
+        self.refresh_btn.setToolTip("Refresh current view")
+        top_layout.addWidget(self.refresh_btn)
         
         # Clear cache button
-        self.clear_cache_btn = QPushButton("Clear Cache")
-        layout.addWidget(self.clear_cache_btn)
+        self.clear_cache_btn = QPushButton("🗑️ Clear Cache")
+        self.clear_cache_btn.setToolTip("Clear preview cache")
+        top_layout.addWidget(self.clear_cache_btn)
         
         # Recent folders dropdown
         recent_label = QLabel("Recent:")
-        layout.addWidget(recent_label)
+        top_layout.addWidget(recent_label)
         
         self.recent_combo = QComboBox()
         self.recent_combo.setMinimumWidth(200)
         self.recent_combo.setMaximumWidth(250)
         self.recent_combo.addItem("Select recent folder...")
-        layout.addWidget(self.recent_combo)
+        top_layout.addWidget(self.recent_combo)
+        
+        main_layout.addLayout(top_layout)
+        
+        # Bottom row: Breadcrumb navigation
+        breadcrumb_frame = QFrame()
+        breadcrumb_frame.setStyleSheet("""
+            QFrame {
+                background-color: white;
+                border: 1px solid #d0d0d0;
+                border-radius: 8px;
+                padding: 2px;
+            }
+        """)
+        breadcrumb_layout = QHBoxLayout(breadcrumb_frame)
+        breadcrumb_layout.setContentsMargins(4, 2, 4, 2)
+        breadcrumb_layout.setSpacing(0)
+        
+        # Scrollable breadcrumb area
+        self.breadcrumb_scroll = QScrollArea()
+        self.breadcrumb_scroll.setWidgetResizable(True)
+        self.breadcrumb_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.breadcrumb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.breadcrumb_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.breadcrumb_scroll.setMaximumHeight(40)
+        self.breadcrumb_scroll.setStyleSheet("""
+            QScrollArea {
+                background-color: transparent;
+                border: none;
+            }
+            QScrollBar:horizontal {
+                height: 6px;
+                background-color: transparent;
+                margin: 0px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #c0c0c0;
+                border-radius: 3px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #a0a0a0;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+            }
+        """)
+        
+        self.breadcrumb_container = QWidget()
+        self.breadcrumb_layout = QHBoxLayout(self.breadcrumb_container)
+        self.breadcrumb_layout.setContentsMargins(0, 0, 0, 0)
+        self.breadcrumb_layout.setSpacing(0)
+        self.breadcrumb_layout.addStretch()
+        
+        self.breadcrumb_scroll.setWidget(self.breadcrumb_container)
+        breadcrumb_layout.addWidget(self.breadcrumb_scroll)
+        
+        main_layout.addWidget(breadcrumb_frame)
     
     def connect_signals(self):
         """Connect widget signals"""
@@ -84,46 +188,100 @@ class NavigationBar(QWidget):
         
         self.current_directory = directory
         self.path_edit.setText(directory)
-        self.path_edit.setToolTip(directory)
         
-        # Update up button state
-        parent_dir = os.path.dirname(directory)
-        can_go_up = parent_dir and parent_dir != directory
-        self.up_btn.setEnabled(can_go_up)
+        # Enable up button if not at root
+        parent = str(Path(directory).parent)
+        self.up_btn.setEnabled(parent != directory)
         
-        # Save to settings and update recent
-        if self.settings_manager:
-            self.settings_manager.set("working_directory", directory)
-            self.add_to_recent(directory)
+        # Update breadcrumbs
+        self.update_breadcrumbs(directory)
+        
+        # Add to recent folders
+        self.add_to_recent(directory)
+    
+    def update_breadcrumbs(self, directory):
+        """Update breadcrumb navigation trail"""
+        # Clear existing breadcrumbs
+        for btn in self.breadcrumb_buttons:
+            btn.deleteLater()
+        self.breadcrumb_buttons.clear()
+        
+        # Remove stretch
+        while self.breadcrumb_layout.count() > 0:
+            self.breadcrumb_layout.takeAt(0)
+        
+        # Build breadcrumb path
+        path = Path(directory)
+        parts = []
+        
+        # Build path parts
+        current = path
+        while current != current.parent:
+            parts.insert(0, (current.name or str(current), str(current)))
+            current = current.parent
+        
+        # Add root with home icon
+        parts.insert(0, ("🏠", str(current)))
+        
+        # Create breadcrumb buttons
+        for i, (name, full_path) in enumerate(parts):
+            # Add separator (skip for first item)
+            if i > 0:
+                separator = QLabel(" › ")
+                separator.setStyleSheet("""
+                    color: #999; 
+                    font-size: 16px;
+                    padding: 0px 2px;
+                    margin-top: 2px;
+                """)
+                self.breadcrumb_layout.addWidget(separator)
+            
+            # Add breadcrumb button
+            if i == 0:
+                # First item is home icon
+                display_name = name
+            else:
+                display_name = name if name else "Root"
+                # Truncate long folder names
+                if len(display_name) > 25:
+                    display_name = display_name[:22] + "..."
+            
+            btn = BreadcrumbButton(display_name, full_path, self)
+            btn.clicked_with_path.connect(self.directory_changed.emit)
+            self.breadcrumb_layout.addWidget(btn)
+            self.breadcrumb_buttons.append(btn)
+            
+            # Make last button bold and darker
+            if i == len(parts) - 1:
+                font = btn.font()
+                font.setBold(True)
+                btn.setFont(font)
+                btn.setStyleSheet(btn.styleSheet() + """
+                    QPushButton {
+                        color: #1d1d1f;
+                        font-weight: 700;
+                    }
+                    QPushButton:hover {
+                        background-color: #E5F1FB;
+                    }
+                """)
+        
+        self.breadcrumb_layout.addStretch()
     
     def go_up(self):
-        """Navigate up one directory level"""
-        if not self.current_directory:
-            return
-        
-        parent_dir = os.path.dirname(self.current_directory)
-        
-        if parent_dir and parent_dir != self.current_directory:
-            self.directory_changed.emit(parent_dir)
+        """Navigate to parent directory"""
+        if self.current_directory:
+            parent = str(Path(self.current_directory).parent)
+            if parent != self.current_directory:
+                self.directory_changed.emit(parent)
     
     def navigate_to_path(self):
-        """Navigate to the path entered in the path field"""
+        """Navigate to the path in the edit field"""
         path = self.path_edit.text().strip()
-        
-        if not path:
-            return
-        
-        # Expand user home directory
-        path = os.path.expanduser(path)
-        
-        if os.path.exists(path) and os.path.isdir(path):
+        if path and os.path.exists(path) and os.path.isdir(path):
             self.directory_changed.emit(path)
         else:
-            QMessageBox.warning(
-                self, 
-                "Invalid Path", 
-                f"The path '{path}' does not exist or is not a directory."
-            )
+            QMessageBox.warning(self, "Invalid Path", "The specified path does not exist or is not a directory.")
     
     def browse_folder(self):
         """Browse for a folder using native dialog"""
@@ -184,3 +342,17 @@ class NavigationBar(QWidget):
             if os.path.exists(folder):
                 folder_name = os.path.basename(folder) or folder
                 self.recent_combo.addItem(f"{folder_name} - {folder}")
+    
+    def dragEnterEvent(self, event):
+        """Handle drag enter event"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+    
+    def dropEvent(self, event):
+        """Handle drop event"""
+        urls = event.mimeData().urls()
+        if urls:
+            path = urls[0].toLocalFile()
+            if os.path.isdir(path):
+                self.directory_changed.emit(path)
+                event.acceptProposedAction()
