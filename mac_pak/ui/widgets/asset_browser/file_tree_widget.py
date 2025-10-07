@@ -6,7 +6,7 @@ Enhanced file tree widget with size, date columns and context menu
 import os
 from datetime import datetime
 from PyQt6.QtWidgets import (QTreeWidget, QTreeWidgetItem, QFrame, QMenu, 
-                            QApplication, QMessageBox)
+                            QApplication, QMessageBox, QStyle)
 from PyQt6.QtCore import Qt, pyqtSignal, QUrl
 from PyQt6.QtGui import QFont, QDesktopServices, QColor
 
@@ -40,15 +40,19 @@ class FileTreeWidget(QTreeWidget):
         self.setRootIsDecorated(True)
         self.setUniformRowHeights(True)
         self.setAnimated(True)
-        self.setSortingEnabled(True)
-        self.sortByColumn(0, Qt.SortOrder.AscendingOrder)
-        self.setAlternatingRowColors(True)  # Zebra striping
+        self.setSortingEnabled(False)  # We'll handle sorting manually
+        self.setAlternatingRowColors(True)
+
+        self.header().setSectionsClickable(True)
+        self.header().setSortIndicatorShown(True)
+
+        self.header().setSectionsMovable(False)
         
         # Set column widths
         self.setColumnWidth(0, 450)
         self.setColumnWidth(1, 80)
         self.setColumnWidth(2, 100)
-        self.setColumnWidth(3, 150)
+        self.setColumnWidth(3, 120)
         
         # Remove grid lines
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -64,6 +68,7 @@ class FileTreeWidget(QTreeWidget):
                 border-radius: 8px;
                 background-color: white;
                 outline: none;
+                show-decoration-selected: 1;
             }
             QTreeWidget::item {
                 padding: 4px;
@@ -72,12 +77,19 @@ class FileTreeWidget(QTreeWidget):
             QTreeWidget::item:hover {
                 background-color: #e8f4fd;
             }
+            QTreeWidget::item:alternate {
+                background-color: #f9f9f9;
+            }
+            QTreeWidget::item:hover:alternate {
+                background-color: #e8f4fd;
+            }
             QTreeWidget::item:selected {
                 background-color: #007AFF;
                 color: white;
             }
-            QTreeWidget::item:alternate {
-                background-color: #f9f9f9;
+            QTreeWidget::item:selected:alternate {
+                background-color: #007AFF;
+                color: white;
             }
             QHeaderView::section {
                 background-color: #f5f5f5;
@@ -101,7 +113,50 @@ class FileTreeWidget(QTreeWidget):
         self.itemClicked.connect(self.on_item_clicked)
         self.itemDoubleClicked.connect(self.on_item_double_clicked)
         self.customContextMenuRequested.connect(self.show_context_menu)
+        self.header().sortIndicatorChanged.connect(self.on_sort_indicator_changed)
     
+    def on_sort_indicator_changed(self, logical_index, order):
+        """Handle sort indicator change"""
+        self.sort_tree_items(logical_index, order)
+    
+    def sort_tree_items(self, column, order):
+        """Sort tree items keeping folders first"""
+        root = self.invisibleRootItem()
+        items = []
+        
+        # Remove all items
+        while root.childCount() > 0:
+            items.append(root.takeChild(0))
+        
+        # Determine sort value based on column
+        def get_sort_value(item):
+            if column == 0:  # Name
+                text = item.text(0)
+                if item.text(1) != "Folder" and ' ' in text:
+                    text = text.split(' ', 1)[1]
+                return text.lower()
+            elif column == 1:  # Type
+                return item.text(1).lower()
+            elif column == 2:  # Size
+                size_text = item.text(2)
+                if size_text == "--":
+                    return 0
+                return self._parse_size(size_text)
+            elif column == 3:  # Modified
+                return item.text(3)
+            return ""
+        
+        is_descending = (order == Qt.SortOrder.DescendingOrder)
+        
+        folders = [item for item in items if item.text(1) == "Folder"]
+        files = [item for item in items if item.text(1) != "Folder"]
+        
+        folders.sort(key=get_sort_value, reverse=is_descending)
+        files.sort(key=get_sort_value, reverse=is_descending)
+        
+        for item in folders + files:
+            root.addChild(item)
+
     def load_directory(self, directory):
         """Load directory contents"""
         if not directory or not os.path.exists(directory):
@@ -133,10 +188,10 @@ class FileTreeWidget(QTreeWidget):
                     if entry.is_dir():
                         item.setText(1, "Folder")
                         item.setText(2, "--")
-                        # Use text icon for folder instead of QIcon
-                        item.setText(0, f"📁 {entry.name}")
-                        # Set folder text color
-                        item.setForeground(0, QColor("#007AFF"))
+                        # Use QIcon for folder
+                        item.setText(0, entry.name)
+                        item.setIcon(0, self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon))
+                        # Set folder text bold
                         font = item.font(0)
                         font.setBold(True)
                         item.setFont(0, font)
@@ -168,10 +223,28 @@ class FileTreeWidget(QTreeWidget):
             
             # Emit stats changed
             self.stats_changed.emit()
+
+            self.sort_tree_items(0, Qt.SortOrder.AscendingOrder)
+            self.header().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
             
         except PermissionError:
             QMessageBox.warning(self, "Permission Denied", 
                               f"Cannot access directory: {directory}")
+    
+    def _parse_size(self, size_str):
+        """Parse size string back to bytes for sorting"""
+        if not size_str or size_str == "--":
+            return 0
+        parts = size_str.split()
+        if len(parts) != 2:
+            return 0
+        try:
+            value = float(parts[0])
+            unit = parts[1]
+            multipliers = {'B': 1, 'KB': 1024, 'MB': 1024**2, 'GB': 1024**3, 'TB': 1024**4, 'PB': 1024**5}
+            return value * multipliers.get(unit, 1)
+        except:
+            return 0
     
     def refresh(self):
         """Refresh current directory"""

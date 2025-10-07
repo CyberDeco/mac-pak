@@ -7,6 +7,7 @@ import os
 from typing import Dict, Optional, Callable
 
 from ..handlers import FormatHandlerRegistry, get_handler_for_file
+from .utils import get_file_icon
 
 class FilePreviewEngine:
     """Core engine for generating file previews"""
@@ -254,25 +255,25 @@ def preview_file_quick(file_path: str, wine_wrapper=None, parser=None) -> Dict:
     return engine.preview_file(file_path)
 
 
-def get_file_icon(filename: str) -> str:
-    """Get appropriate icon for file type"""
-    ext = os.path.splitext(filename)[1].lower()
+# def get_file_icon(filename: str) -> str:
+#     """Get appropriate icon for file type"""
+#     ext = os.path.splitext(filename)[1].lower()
     
-    # Default icon mapping
-    icons = {
-        '.lsx': '📄',
-        '.lsf': '🔒',
-        '.xml': '📄',
-        '.txt': '📝',
-        '.dds': '🖼️',
-        '.gr2': '🎭',
-        '.json': '📋', 
-        '.bshd': '🔧',
-        '.shd': '⚙️',
-        '.lsbs': '📦',
-        '.lsbc': '📦',
-        '.lsfx': '📈',
-        '.loca': '🗄️',
-    }
+#     # Default icon mapping
+#     icons = {
+#         '.lsx': '📄',
+#         '.lsf': '🔒',
+#         '.xml': '📄',
+#         '.txt': '📝',
+#         '.dds': '🖼️',
+#         '.gr2': '🎭',
+#         '.json': '📋', 
+#         '.bshd': '🔧',
+#         '.shd': '⚙️',
+#         '.lsbs': '📦',
+#         '.lsbc': '📦',
+#         '.lsfx': '📈',
+#         '.loca': '🗄️',
+#     }
     
-    return icons.get(ext, '📄')
+#     return icons.get(ext, '📄')

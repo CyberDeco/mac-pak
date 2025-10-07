@@ -142,11 +142,16 @@ def get_file_icon(filename: str) -> str:
         '.lsf': '🔒',
         '.lsbs': '📦',
         '.lsbc': '📦',
-        '.lsfx': '📈',
+        '.lsfx': '✨',
         
         # Media files
         '.dds': '🖼️',
-        '.gr2': '🎭',
+        '.png': '🖼️',
+        '.jpg': '🖼️',
+        '.jpeg': '🖼️',
+        '.gif': '🖼️',
+        '.bmp': '🖼️',
+        '.gr2': '🖌️',
         
         # Shader files
         '.bshd': '🔧',
@@ -156,15 +161,12 @@ def get_file_icon(filename: str) -> str:
         '.loca': '🗄️',
         
         # Common file types
-        '.png': '🖼️',
-        '.jpg': '🖼️',
-        '.jpeg': '🖼️',
-        '.gif': '🖼️',
-        '.bmp': '🖼️',
+
         '.pdf': '📕',
         '.zip': '📦',
         '.rar': '📦',
         '.7z': '📦',
+        '.pak': '📦',
     }
     
     return icons.get(ext, '📄')

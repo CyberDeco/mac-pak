@@ -1,7 +1,9 @@
 /* macOS Native Theme for Mac-Pak Package Manager */
 /* Designed to feel native to macOS with proper spacing, colors, and typography */
 
+/* ========================================================== */
 /* ===== GLOBAL STYLES ===== */
+/* ========================================================== */
 * {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
     font-size: 13px;
@@ -12,7 +14,9 @@ QApplication {
     background-color: #f1f2f1;
 }
 
+/* ========================================================== */
 /* ===== MAIN WINDOW ===== */
+/* ========================================================== */
 QMainWindow {
     background-color: #f1f2f1;
     border: none;
@@ -22,8 +26,9 @@ QWidget {
     background-color: transparent;
     color: #1d1d1f;
 }
-
+/* ========================================================== */
 /* ===== BUTTONS ===== */
+/* ========================================================== */
 QPushButton {
     background-color: #ffffff;
     border: 1px solid #d2d2d7;
@@ -50,6 +55,7 @@ QPushButton:disabled {
     border-color: #e5e5ea;
 }
 
+
 /* Primary Action Button (Install, Update, etc.) */
 QPushButton[primary="true"] {
     background-color: #007aff;
@@ -71,22 +77,34 @@ QPushButton[primary="true"]:disabled {
 }
 
 /* Destructive Button (Uninstall, Delete, etc.) */
-QPushButton[destructive="true"] {
-    background-color: #ff3b30;
-    color: white;
-    border: none;
-    font-weight: 600;
-}
 
 QPushButton[destructive="true"]:hover {
-    background-color: #d70015;
+    background-color: #f7cdcd;
+    border: 1px solid #d32f2f;
 }
 
 QPushButton[destructive="true"]:pressed {
-    background-color: #a20000;
+    background-color: #c90002;
 }
 
+/* ========================================================== */
+/* ===== TOOLTIPS ===== */
+/* ========================================================== */
+
+QToolTip {
+    background-color: #000000;
+    color: #ffffff;
+    border: none;
+    border-radius: 6px;
+    padding: 2px 2px;
+    font-size: 12px;
+    font-weight: 500;
+    opacity: 200;  /* 0-255, where 255 is fully opaque */
+}
+
+/* ========================================================== */
 /* ===== SEARCH BAR / LINE EDITS ===== */
+/* ========================================================== */
 QLineEdit {
     background-color: #ffffff;
     border: 1px solid #7a97cb;
@@ -120,7 +138,9 @@ QLineEdit[search="true"]:focus {
     padding: 8px 14px 8px 34px;
 }
 
+/* ========================================================== */
 /* ===== PACKAGE LIST / TABLE VIEWS ===== */
+/* ========================================================== */
 QListWidget, QTreeWidget, QTableWidget {
     background-color: #ffffff;
     border: 1px solid #d2d2d7;
@@ -161,7 +181,9 @@ QHeaderView::section {
     letter-spacing: 0.5px;
 }
 
+/* ========================================================== */
 /* ===== SCROLLBARS ===== */
+/* ========================================================== */
 QScrollBar:vertical {
     background-color: transparent;
     width: 12px;
@@ -206,7 +228,9 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
     width: 0;
 }
 
+/* ========================================================== */
 /* ===== TABS ===== */
+/* ========================================================== */
 QTabWidget::pane {
     background-color: #ffffff;
     border: 1px solid #d2d2d7;
@@ -237,7 +261,9 @@ QTabBar::tab:hover:!selected {
     color: #1d1d1f;
 }
 
+/* ========================================================== */
 /* ===== PROGRESS BARS ===== */
+/* ========================================================== */
 QProgressBar {
     background-color: #f2f2f7;
     border: none;
@@ -251,7 +277,9 @@ QProgressBar::chunk {
     border-radius: 6px;
 }
 
+/* ========================================================== */
 /* ===== MENU BAR & MENUS ===== */
+/* ========================================================== */
 QMenuBar {
     background-color: transparent;
     border: none;
@@ -295,7 +323,9 @@ QMenu::separator {
     margin: 8px 16px;
 }
 
+/* ========================================================== */
 /* ===== RADIO BUTTONS ===== */
+/* ========================================================== */
 QRadioButton {
     spacing: 8px;
     color: #1d1d1f;
@@ -342,7 +372,7 @@ QComboBox QAbstractItemView::item {
 }
 
 QComboBox QAbstractItemView::item:hover {
-    background-color: #f2f2f7;
+    background-color: #e8f4fd;
     color: #1d1d1f;
 }
 
@@ -367,7 +397,9 @@ QComboBox::down-arrow {
     border: none;
 }
 
+/* ========================================================== */
 /* ===== STATUS BAR ===== */
+/* ========================================================== */
 QStatusBar {
     background-color: #f2f2f7;
     border-top: 1px solid #e5e5ea;
@@ -376,17 +408,9 @@ QStatusBar {
     padding: 4px 16px;
 }
 
-/* ===== TOOL TIPS ===== */
-QToolTip {
-    background-color: rgba(0, 0, 0, 0.8);
-    color: white;
-    border: none;
-    border-radius: 6px;
-    padding: 6px 10px;
-    font-size: 12px;
-}
-
+/* ========================================================== */
 /* ===== SPLITTERS ===== */
+/* ========================================================== */
 QSplitter::handle {
     background-color: #d2d2d7;
 }
@@ -398,11 +422,12 @@ QSplitter::handle:horizontal {
 QSplitter::handle:vertical {
     height: 1px;
 }
-
+/* ========================================================== */
 /* ===== HEADERS & TYPOGRAPHY ===== */
+/* ========================================================== */
 /* Usage: label.setProperty("header", "h1") */
 QLabel[header="h1"] {
-    font-size: 28px;
+    font-size: 24px;
     font-weight: 700;
     color: #1d1d1f;
     margin: 10px 0 10px 0;
@@ -526,7 +551,9 @@ QFrame[section-divider="true"] {
     margin: 20px 0;
 }
 
+/* ========================================================== */
 /* ===== CUSTOM PACKAGE ITEM STYLING ===== */
+/* ========================================================== */
 /* You can add these classes to your package list items */
 QWidget[package-item="true"] {
     background-color: #ffffff;
@@ -559,7 +586,9 @@ QLabel[package-description="true"] {
     line-height: 1.4;
 }
 
+/* ========================================================== */
 /* ===== DARK MODE SUPPORT ===== */
+/* ========================================================== */
 /* Uncomment these if you want to support dark mode */
 /*
 @media (prefers-color-scheme: dark) {

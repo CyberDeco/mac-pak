@@ -7,38 +7,38 @@ import os
 from pathlib import Path
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton, 
                             QLineEdit, QComboBox, QLabel, QFileDialog, 
-                            QMessageBox, QScrollArea, QFrame)
+                            QMessageBox, QScrollArea, QFrame, QStyle)
 from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtGui import QIcon
-
 
 class BreadcrumbButton(QPushButton):
     """Custom button for breadcrumb navigation"""
     
     clicked_with_path = pyqtSignal(str)
     
-    def __init__(self, text, path, parent=None):
+    def __init__(self, text, path, parent=None, icon=None):
         super().__init__(text, parent)
         self.path = path
+        if icon:
+            self.setIcon(icon)
         self.setFlat(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
                 border: none;
-                color: #007AFF;
-                font-weight: 500;
-                font-size: 13px;
-                padding: 6px 10px;
+                color: #3478f6;
+                font-weight: 400;
+                font-size: 12px;
+                padding: 2px 4px;
                 text-align: left;
-                min-height: 28px;
+                min-height: 20px;
             }
             QPushButton:hover {
-                background-color: #E5F1FB;
-                border-radius: 6px;
+                background-color: rgba(52, 120, 246, 0.1);
+                border-radius: 4px;
             }
             QPushButton:pressed {
-                background-color: #D0E7F7;
+                background-color: rgba(52, 120, 246, 0.15);
             }
         """)
         self.clicked.connect(lambda: self.clicked_with_path.emit(self.path))
@@ -80,7 +80,9 @@ class NavigationBar(QWidget):
         top_layout.setSpacing(10)
         
         # Up button with icon
-        self.up_btn = QPushButton("↑ Up")
+        self.up_btn = QPushButton("Up")
+        self.up_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogToParent))
+
         self.up_btn.setEnabled(False)
         self.up_btn.setToolTip("Go to parent directory")
         top_layout.addWidget(self.up_btn)
@@ -91,7 +93,8 @@ class NavigationBar(QWidget):
         top_layout.addWidget(self.path_edit, 1)
         
         # Browse button with icon
-        self.browse_btn = QPushButton("📁 Browse")
+        self.browse_btn = QPushButton(" Browse")
+        self.browse_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.browse_btn.setToolTip("Browse for a folder")
         top_layout.addWidget(self.browse_btn)
         
@@ -121,14 +124,14 @@ class NavigationBar(QWidget):
         breadcrumb_frame = QFrame()
         breadcrumb_frame.setStyleSheet("""
             QFrame {
-                background-color: white;
-                border: 1px solid #d0d0d0;
-                border-radius: 8px;
-                padding: 2px;
+                background-color: #f5f5f5;
+                border: 1px solid #d1d1d6;
+                border-radius: 6px;
+                padding: 0px;
             }
         """)
         breadcrumb_layout = QHBoxLayout(breadcrumb_frame)
-        breadcrumb_layout.setContentsMargins(4, 2, 4, 2)
+        breadcrumb_layout.setContentsMargins(4, 0, 4, 0)
         breadcrumb_layout.setSpacing(0)
         
         # Scrollable breadcrumb area
@@ -137,7 +140,7 @@ class NavigationBar(QWidget):
         self.breadcrumb_scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.breadcrumb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.breadcrumb_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.breadcrumb_scroll.setMaximumHeight(40)
+        self.breadcrumb_scroll.setMaximumHeight(30)
         self.breadcrumb_scroll.setStyleSheet("""
             QScrollArea {
                 background-color: transparent;
@@ -221,48 +224,54 @@ class NavigationBar(QWidget):
             current = current.parent
         
         # Add root with home icon
-        parts.insert(0, ("🏠", str(current)))
+        hd_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DriveHDIcon)
+        parts.insert(0, ("", str(current), hd_icon))
         
         # Create breadcrumb buttons
-        for i, (name, full_path) in enumerate(parts):
+        for i, part_data in enumerate(parts):
+            # Unpack with optional icon
+            if len(part_data) == 3:
+                name, full_path, icon = part_data
+            else:
+                name, full_path = part_data
+                if name == 'Desktop':
+                    icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DesktopIcon)
+                else:
+                    icon = self.style().standardIcon(QStyle.StandardPixmap.SP_DirIcon)
+            
             # Add separator (skip for first item)
             if i > 0:
                 separator = QLabel(" › ")
                 separator.setStyleSheet("""
-                    color: #999; 
-                    font-size: 16px;
-                    padding: 0px 2px;
-                    margin-top: 2px;
+                    color: #86868b; 
+                    font-size: 24px;
+                    padding: 2px 0px;
+                    margin-top: 0px;
+                    background-color: transparent;
+                    border: none;
                 """)
                 self.breadcrumb_layout.addWidget(separator)
             
             # Add breadcrumb button
             if i == 0:
-                # First item is home icon
-                display_name = name
+                # First item is root with icon
+                display_name = name if name else ""
             else:
                 display_name = name if name else "Root"
                 # Truncate long folder names
                 if len(display_name) > 25:
                     display_name = display_name[:22] + "..."
             
-            btn = BreadcrumbButton(display_name, full_path, self)
+            btn = BreadcrumbButton(display_name, full_path, self, icon)
             btn.clicked_with_path.connect(self.directory_changed.emit)
             self.breadcrumb_layout.addWidget(btn)
             self.breadcrumb_buttons.append(btn)
             
             # Make last button bold and darker
             if i == len(parts) - 1:
-                font = btn.font()
-                font.setBold(True)
-                btn.setFont(font)
-                btn.setStyleSheet(btn.styleSheet() + """
+                btn.setStyleSheet(btn.styleSheet().replace("color: #3478f6;", "color: #1d1d1f;") + """
                     QPushButton {
-                        color: #1d1d1f;
-                        font-weight: 700;
-                    }
-                    QPushButton:hover {
-                        background-color: #E5F1FB;
+                        font-weight: 500;
                     }
                 """)
         

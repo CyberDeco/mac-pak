@@ -5,7 +5,7 @@ Enhanced filter bar with active filter indicators and quick filter buttons
 
 import os
 from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLineEdit, 
-                            QPushButton, QLabel, QFrame)
+                            QPushButton, QLabel, QFrame, QStyle)
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
@@ -48,44 +48,6 @@ class QuickFilterButton(QPushButton):
         self.extensions = extensions
         self.setCheckable(True)
         self.setMinimumWidth(80)
-        self.update_style()
-    
-    def update_style(self):
-        """Update button style based on checked state"""
-        if self.isChecked():
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: #007AFF;
-                    color: white;
-                    border: 1px solid #007AFF;
-                    border-radius: 6px;
-                    padding: 6px 12px;
-                    font-weight: 600;
-                }
-                QPushButton:hover {
-                    background-color: #0051D5;
-                }
-            """)
-        else:
-            self.setStyleSheet("""
-                QPushButton {
-                    background-color: white;
-                    color: #333;
-                    border: 1px solid #d0d0d0;
-                    border-radius: 6px;
-                    padding: 6px 12px;
-                }
-                QPushButton:hover {
-                    background-color: #f5f5f5;
-                    border-color: #007AFF;
-                }
-            """)
-    
-    def setChecked(self, checked):
-        """Override to update style when checked state changes"""
-        super().setChecked(checked)
-        self.update_style()
-
 
 class FilterBar(QWidget):
     """Enhanced filter bar with active indicators and quick filters"""
@@ -173,21 +135,11 @@ class FilterBar(QWidget):
         top_layout.addWidget(self.filter_combo)
         
         # Clear filters button
-        self.clear_btn = QPushButton("✕ Clear")
+        self.clear_btn = QPushButton(" Clear")
+        self.clear_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_LineEditClearButton))
+        self.clear_btn.setProperty("destructive", "true")
+        
         self.clear_btn.setToolTip("Clear all filters")
-        self.clear_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ff3b30;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 6px 12px;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #d32f2f;
-            }
-        """)
         top_layout.addWidget(self.clear_btn)
         
         main_layout.addLayout(top_layout)
@@ -212,11 +164,12 @@ class FilterBar(QWidget):
         # Define quick filter buttons
         quick_filters = [
             ("📦 PAK", [".pak"]),
-            ("📄 Data", [".lsf", ".lsx", ".lsj"]),
+            ("📄 Binary Files", [".lsf", ".lsx", ".lsj", ".lsb", ".lsbc", ".lsbs"]),
             ("🖼️ Images", [".dds", ".png", ".jpg", ".jpeg"]),
-            ("🎭 Models", [".gr2"]),
+            ("🖌️ Models", [".gr2"]),
             ("📜 Scripts", [".lua", ".script"]),
             ("🔊 Audio", [".wem", ".wav"]),
+            ("✨ Effects", [".lsfx"]),
         ]
         
         for label, exts in quick_filters:

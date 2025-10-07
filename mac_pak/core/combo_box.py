@@ -35,7 +35,7 @@ class CheckableComboBox(QComboBox):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
         # Calculate arrow button area (right side of combobox)
-        button_width = 22  # Width of the arrow button area
+        button_width = 20  # Width of the arrow button area
         button_margin = 4  # Margin from edges
         
         arrow_bg_rect = QRect(
@@ -51,10 +51,10 @@ class CheckableComboBox(QComboBox):
         painter.drawRoundedRect(arrow_bg_rect, 6, 6)
         
         # Calculate arrow position (centered in the button)
-        arrow_width = 8
+        arrow_width = 6
         arrow_height = 4
-        arrow_x = arrow_bg_rect.center().x() - arrow_width // 2
-        arrow_y = arrow_bg_rect.center().y() - arrow_height // 2
+        arrow_x = (arrow_bg_rect.center().x() - arrow_width // 2) + 1
+        arrow_y = (arrow_bg_rect.center().y() - arrow_height // 2) + 1
         
         # Draw white chevron arrow
         path = QPainterPath()

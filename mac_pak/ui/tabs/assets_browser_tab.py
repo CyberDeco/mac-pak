@@ -60,7 +60,7 @@ class AssetBrowserTab(QWidget):
                 self.load_directory(working_dir)
             
             # Restore splitter position
-            splitter_sizes = settings_manager.get("asset_browser_splitter", [750, 250])
+            splitter_sizes = settings_manager.get("asset_browser_splitter", [800, 200])
             self.main_splitter.setSizes(splitter_sizes)
     
     def setup_ui(self):
@@ -95,7 +95,7 @@ class AssetBrowserTab(QWidget):
         # Right:  preview pane with zoom and copy controls
         self.main_splitter.addWidget(self.preview_widget)
         
-        self.main_splitter.setSizes([750, 250])
+        self.main_splitter.setSizes([800, 200])
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
         
