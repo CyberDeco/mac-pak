@@ -10,6 +10,8 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QPushButton,
                             QMessageBox, QScrollArea, QFrame, QStyle)
 from PyQt6.QtCore import pyqtSignal, Qt
 
+from ...formatting.combo_box import BlinkingComboBox
+
 class BreadcrumbButton(QPushButton):
     """Custom button for breadcrumb navigation"""
     
@@ -112,7 +114,7 @@ class NavigationBar(QWidget):
         recent_label = QLabel("Recent:")
         top_layout.addWidget(recent_label)
         
-        self.recent_combo = QComboBox()
+        self.recent_combo = BlinkingComboBox()
         self.recent_combo.setMinimumWidth(200)
         self.recent_combo.setMaximumWidth(250)
         self.recent_combo.addItem("Select recent folder...")

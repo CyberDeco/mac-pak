@@ -160,6 +160,9 @@ class WinePakTools(BaseWineOperations):
         
         env = os.environ.copy()
         env["WINEPREFIX"] = self.wine_env.wine_prefix
+
+        print(cmd)
+        print(self.wine_env.wine_prefix)
         
         self.current_monitor = WineProcessMonitor()
         self.current_monitor.run_process_async(cmd, env)

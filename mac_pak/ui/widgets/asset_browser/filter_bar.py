@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QWidget, QHBoxLayout, QVBoxLayout, QLineEdit,
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QFont
 
-from ....core.combo_box import CheckableComboBox
+from ...formatting.combo_box import CheckableComboBox
 
 
 class FilterBadge(QLabel):

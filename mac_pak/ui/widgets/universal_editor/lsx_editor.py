@@ -17,7 +17,6 @@ from .lsx_file_handler import LSXFileHandler
 from .lsx_converter import LSXConverter
 from ....data.parsers.larian_parser import UniversalBG3Parser
 
-
 class LSXEditor(QWidget):
     """Universal BG3 file editor supporting LSX, LSJ, and LSF formats"""
     

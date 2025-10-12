@@ -1,5 +1,10 @@
+#!/usr/bin/env python3
+"""
+ComboBox (drop down menu) functionality/customization.
+"""
+
 from PyQt6.QtWidgets import QComboBox, QStyledItemDelegate, QStyle, QStyleOptionComboBox, QStylePainter
-from PyQt6.QtCore import Qt, QEvent, QRect, QPoint, pyqtSignal
+from PyQt6.QtCore import Qt, QEvent, QRect, QPoint, pyqtSignal, QTimer
 from PyQt6.QtGui import QStandardItemModel, QStandardItem, QPalette, QColor, QBrush, QPainter, QPen, QPainterPath
 
 class ComboBoxHoverDelegate(QStyledItemDelegate):
@@ -126,3 +131,30 @@ class CheckableComboBox(QComboBox):
                 extensions = item.data(Qt.ItemDataRole.UserRole)
                 checked[item.text()] = extensions
         return checked
+
+class BlinkingComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.original_style = self.styleSheet()
+        self.blink_timer = QTimer()
+        self.blink_timer.timeout.connect(self._toggle_blink)
+        self.blink_count = 0
+        
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._start_blink()
+    
+    def _start_blink(self):
+        self.blink_count = 0
+        self.blink_timer.start(100)  # 100ms intervals
+    
+    def _toggle_blink(self):
+        if self.blink_count < 4:  # 2 full blinks = 4 toggles
+            if self.blink_count % 2 == 0:
+                self.setStyleSheet("background-color: #007AFF;")
+            else:
+                self.setStyleSheet(self.original_style)
+            self.blink_count += 1
+        else:
+            self.blink_timer.stop()
+            self.setStyleSheet(self.original_style)

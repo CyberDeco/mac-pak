@@ -94,22 +94,6 @@ class PreviewWidget(QWidget):
         self.copy_btn = QPushButton("📋 Copy")
         self.copy_btn.setToolTip("Copy preview content to clipboard")
         self.copy_btn.setEnabled(False)
-        # self.copy_btn.setStyleSheet("""
-        #     QPushButton {
-        #         background-color: #007AFF;
-        #         color: white;
-        #         border: none;
-        #         border-radius: 6px;
-        #         padding: 6px 12px;
-        #         font-weight: 600;
-        #     }
-        #     QPushButton:hover {
-        #         background-color: #0051D5;
-        #     }
-        #     QPushButton:disabled {
-        #         background-color: #cccccc;
-        #     }
-        # """)
         self.copy_btn.clicked.connect(self.copy_content)
         header_layout.addWidget(self.copy_btn)
         

@@ -38,8 +38,8 @@ class LSXFileHandler:
                 content = self._create_lsf_placeholder(file_path)
             else:
                 # Read text files
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                with open(file_path, 'rb') as f:
+                    content = f.read().decode('utf-8')
             
             # Update editor - revert to original approach
             ui.text_editor.clear()
@@ -115,16 +115,16 @@ class LSXFileHandler:
                 
                 if reply == QMessageBox.StandardButton.Yes:
                     lsx_file = file_path.replace('.lsf', '.lsx')
-                    with open(lsx_file, 'w', encoding='utf-8') as f:
-                        f.write(content)
+                    with open(lsx_file, 'wb') as f:
+                        f.write(content.encode('utf-8'))
                     QMessageBox.information(self.editor, "Saved", f"Saved as LSX: {lsx_file}")
                     return
                 elif reply == QMessageBox.StandardButton.Cancel:
                     return
             
             # Normal save
-            with open(file_path, 'w', encoding='utf-8') as f:
-                f.write(content)
+            with open(file_path, 'wb') as f:
+                f.write(content.encode('utf-8'))
             
             self.editor.modified = False
             ui.status_label.setText(f"Saved: {os.path.basename(file_path)}")
@@ -156,8 +156,8 @@ class LSXFileHandler:
             else:
                 # Save text content
                 content = ui.text_editor.toPlainText()
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content)
+                with open(file_path, 'wb') as f:
+                    f.write(content.encode('utf-8'))
             
             # Update state
             self.editor.current_file = file_path

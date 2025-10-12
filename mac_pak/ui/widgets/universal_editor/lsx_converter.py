@@ -7,9 +7,9 @@ Updated to properly handle LSF conversions and Save button states
 import os
 import tempfile
 from PyQt6.QtWidgets import QMessageBox
+from .lsx_lsj_converter import LSXLSJConverter
 from ...threads.lsf_conversion import LSFConversionThread
 from ...dialogs.progress_dialog import ProgressDialog
-
 
 class LSXConverter:
     """Handles file format conversions for LSX Editor"""
@@ -78,6 +78,8 @@ class LSXConverter:
         
         # Disable UI
         ui.set_conversion_state(True)
+
+        converter = LSXLSJConverter()
         
         # Create and start conversion thread with CORRECT parameter order
         self.conversion_thread = LSFConversionThread(
@@ -87,6 +89,7 @@ class LSXConverter:
             self.temp_output_file,       # 4th: dest_path
             source_format,               # 5th: source_format
             target_format,               # 6th: target_format
+            converter,                   # 7th: converter
             self.editor                  # 7th: parent
         )
         
@@ -110,9 +113,8 @@ class LSXConverter:
     def _convert_text_formats(self, source_format, target_format, source_file, ui):
         """Convert between LSX and LSJ (no wine needed)"""
         try:
-            from .lsx_text_converter import LSXTextConverter
             
-            converter = LSXTextConverter()
+            converter = LSXLSJConverter()
             content = ui.text_editor.toPlainText()
             
             if source_format == 'lsx' and target_format == 'lsj':
@@ -123,8 +125,8 @@ class LSXConverter:
                 raise Exception(f"Unsupported conversion: {source_format} to {target_format}")
             
             # Write to temp file
-            with open(self.temp_output_file, 'w', encoding='utf-8') as f:
-                f.write(converted)
+            with open(self.temp_output_file, 'wb') as f:
+                f.write(converted.encode('utf-8'))
             
             # Show result immediately (no thread needed)
             result_data = {
@@ -167,8 +169,8 @@ class LSXConverter:
                 # Text file - load content
                 content = result_data.get('content', '')
                 if not content and os.path.exists(self.temp_output_file):
-                    with open(self.temp_output_file, 'r', encoding='utf-8') as f:
-                        content = f.read()
+                    with open(self.temp_output_file, 'rb') as f:
+                        content = f.read().decode('utf-8')
             
             # Update editor
             ui.text_editor.clear()
@@ -254,10 +256,10 @@ class LSXConverter:
         """Create temp copy of source file"""
         temp_fd, temp_path = tempfile.mkstemp(suffix=f".{source_format}")
         try:
-            with open(source_file, 'r', encoding='utf-8') as src:
-                content = src.read()
-            with os.fdopen(temp_fd, 'w', encoding='utf-8') as dst:
-                dst.write(content)
+            with open(source_file, 'rb') as src:
+                content = src.read().decode('utf-8')
+            with os.fdopen(temp_fd, 'wb') as dst:
+                dst.write(content.encode('utf-8'))
             return temp_path
         except:
             os.close(temp_fd)
@@ -268,8 +270,8 @@ class LSXConverter:
         temp_fd, temp_path = tempfile.mkstemp(suffix=f".{source_format}")
         try:
             content = ui.text_editor.toPlainText()
-            with os.fdopen(temp_fd, 'w', encoding='utf-8') as f:
-                f.write(content)
+            with os.fdopen(temp_fd, 'wb') as f:
+                f.write(content.encode('utf-8'))
             return temp_path
         except:
             os.close(temp_fd)
